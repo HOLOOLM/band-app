@@ -13,6 +13,7 @@ export default {
       if (url.pathname === '/api/logout')          return withSecHeaders(await apiLogout(request, env));
       if (url.pathname === '/api/change-password') return withSecHeaders(await apiChangePassword(request, env));
       if (url.pathname === '/api/call')            return withSecHeaders(await apiCall(request, env));
+      if (url.pathname === '/api/faktura-pdf')     return withSecHeaders(await apiFakturaPdf(request, env, url));
     } catch (e) {
       return withSecHeaders(json({ ok: false, error: 'Serverfejl i proxy' }, 500));
     }
@@ -177,6 +178,55 @@ async function apiCall(request, env) {
   const d = await callAppsScript(env, Object.assign({}, body, inject));
   await saveSession(env, sess.sid, sess.data); // rullende fornyelse
   return json(d, 200, { 'Set-Cookie': sessionCookie(sess.sid) });
+}
+
+// ─── Server-side honorarafregning (Fase 2) ──────────────────────────────────────
+// Apps Script renderer PDF'en med CPR indsat server-side og returnerer den base64-
+// kodet; her afkodes den og streames som færdig fil. CPR findes aldrig i browserens
+// Network-JSON eller DOM. Åbnes i en fane via GET, så browserens PDF-viewer bruges.
+
+function htmlError(title, msg, status = 200) {
+  const body = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${title}</title>
+    <style>body{font-family:Inter,Arial,sans-serif;padding:40px;color:#0F213C;max-width:520px;margin:0 auto;text-align:center}h2{color:#A04040}</style>
+    </head><body><h2>${title}</h2><p>${msg}</p><p style="color:#666">Luk vinduet og prøv igen.</p></body></html>`;
+  return new Response(body, { status, headers: { 'Content-Type': 'text/html;charset=utf-8' } });
+}
+
+async function apiFakturaPdf(request, env, url) {
+  const sess = await loadSession(request, env);
+  if (!sess || sess.data.kind !== 'member') {
+    return htmlError('Ikke logget ind', 'Din session er udløbet — log ind igen i app-fanen.', 401);
+  }
+  const contractId = url.searchParams.get('contractId') || '';
+  if (!contractId) return htmlError('Fejl', 'contractId mangler i adressen.', 400);
+
+  const d = await callAppsScript(env, {
+    action: 'renderInvoicePdf', contractId,
+    bandId: sess.data.bandId, email: sess.data.email, passwordHash: sess.data.passwordHash
+  });
+  if (!d || !d.ok || !d.pdfBase64) {
+    return htmlError('Kunne ikke klargøre honorarafregning', escapeHtmlW((d && d.error) || 'Ukendt fejl'));
+  }
+  await saveSession(env, sess.sid, sess.data); // rullende fornyelse
+
+  // base64 → bytes
+  const bin = atob(d.pdfBase64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+
+  return new Response(bytes, {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `inline; filename="${(d.fileName || 'honorarafregning.pdf').replace(/[^\w. \-æøåÆØÅ]/g, '')}"`,
+      'Cache-Control': 'no-store', // CPR-holdig fil må ikke caches
+      'Set-Cookie': sessionCookie(sess.sid)
+    }
+  });
+}
+
+function escapeHtmlW(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 // ─── Sikkerheds-headers + CSP på ALLE svar ──────────────────────────────────────

@@ -680,9 +680,7 @@ function pdfPrintStyles(){
     .pdf-attendee{background:#EFE3CC;padding:2px 7px;border-radius:3px;font-size:11px;color:#0F213C}
     .pdf-foot{margin-top:18px;padding-top:12px;border-top:1px solid #E5DAC4;font-size:10px;color:#6A5A40}
     ol{padding-left:16px;line-height:1.7} li{margin-bottom:6px}
-    .cpr-screen{font-family:'JetBrains Mono',monospace;letter-spacing:.05em;color:#8A6F4D}
-    .cpr-print{display:none}
-    @media print{body{padding:0}@page{margin:10mm;size:A4}.cpr-screen{display:none}.cpr-print{display:inline}}
+    @media print{body{padding:0}@page{margin:10mm;size:A4}}
   `;
 }
 
@@ -802,122 +800,21 @@ function previewHonorarPDF(rows, total, member, fra, til, totalKm){
   openPreviewWindow(`Honorar — ${escapeHtml(member.name)}`, _buildHonorarBody(rows, total, member, fra, til, totalKm));
 }
 
-function _buildFakturaHtml(c, fakturaNr){
-  const arr = c.arrangoer || {};
-  const honorarTxt = c.honorar ? c.honorar.toLocaleString('da-DK') + ' kr.' : '—';
-  const paymentTxt = c.paymentTerms === 'Andet' && c.paymentTermsOther
-    ? c.paymentTermsOther
-    : (c.paymentTerms || '');
-  return `<div class="pdf-page" style="font-family:'Inter',sans-serif;color:#2A2A2A">
-    <div style="background:#0F213C;margin:-36px -40px 28px;padding:18px 24px;display:flex;align-items:center;justify-content:space-between;border-radius:4px 4px 0 0">
-      <img src="${DMD_LOGO_B64}" alt="" style="height:56px;object-fit:contain">
-      <div style="color:#fff;font-size:24px;font-weight:700;font-family:'Inter',sans-serif">Honorar afregning</div>
-    </div>
-    <table style="width:100%;border-collapse:collapse;margin-bottom:18px">
-      <tr>
-        <td style="vertical-align:top;font-size:12px;line-height:1.6;color:#2A2A2A;width:55%">
-          <strong>__BAND_NAME__</strong><br>
-          ${_b('payeeName') ? 'V/ '+escapeHtml(_b('payeeName'))+'<br>' : ''}${_b('payeeAddress') ? escapeHtml(_b('payeeAddress')).replace(/\n/g,'<br>') : ''}<span class="cpr-block"><br>CPR: <span class="cpr-screen">XXXXXX-XXXX</span><span class="cpr-print" data-cpr-slot></span></span>
-        </td>
-        <td style="vertical-align:top;font-size:12px;line-height:1.7;color:#2A2A2A;text-align:left">
-          ${escapeHtml(arr.name||'')}<br>
-          ${escapeHtml(arr.address||'')}<br>
-          ${escapeHtml([arr.postnr, arr.city].filter(Boolean).join(' '))}<br>
-          <br>
-          Dato<span style="color:#8A6F4D">.............................................</span> ${escapeHtml(fmtDate(c.date))}
-        </td>
-      </tr>
-    </table>
-    <div style="border-top:1px solid #B8A88A;border-bottom:1px solid #B8A88A;padding:14px 0;margin-bottom:18px;display:flex;justify-content:space-between;align-items:center;font-size:13px">
-      <div>Honorarafregning for arrangement d. <strong>${escapeHtml(fmtDate(c.date))}</strong></div>
-      <div style="font-weight:700;color:#0F213C;font-size:15px">${honorarTxt}</div>
-    </div>
-    <div style="min-height:280px"></div>
-    <div style="border-top:1px solid #B8A88A;padding-top:12px;font-size:11px;line-height:1.7;color:#2A2A2A">
-      Betalingsbetingelser: <strong>${escapeHtml(paymentTxt)}</strong><br>
-      Beløbet indbetales til vores bank __BANK_NAME__<br>
-      Reg: __BANK_REG__&nbsp;&nbsp;Kto: __BANK_KTO__<br>
-      ${escapeHtml((c.venue && c.venue.name) || 'Spillested')} bedes anført ved overførsel<span class="cpr-block"><br>Beløbet indberettes på Cpr. <span class="cpr-screen">XXXXXX-XXXX</span><span class="cpr-print" data-cpr-slot></span></span>
-    </div>
-    <div class="pdf-foot" style="margin-top:24px;border-top:1px solid #D9CFBE;padding-top:10px">
-      __BAND_NAME__ · __CONTACT_NAME__ · __CONTACT_ADDR1__ · __CONTACT_ADDR2__ · Tel: __CONTACT_PHONE__ · Email: __CONTACT_EMAIL__
-    </div>
-  </div>`;
-}
-
-// Hentes server-side ved klik på Print så CPR ikke ligger i HTML-kildekoden.
-// Caches per session så vi ikke spørger backend gentagne gange ved re-print.
-let _cprCache = null;
-async function printHonorarafregningWithCpr(popup){
-  if (!popup || popup.closed) return;
-  const btn = popup.document.getElementById('printBtn');
-  if (btn){ btn.disabled = true; btn.textContent = '… henter CPR'; }
-  try {
-    if (!_cprCache){
-      const d = await apiPost('getBandCpr');
-      if (!d || !d.ok) throw new Error((d && d.error) || 'Kunne ikke hente CPR');
-      _cprCache = d.cpr;
-    }
-    popup.document.querySelectorAll('[data-cpr-slot]').forEach(el => { el.textContent = _cprCache; });
-    if (btn){ btn.disabled = false; btn.textContent = '🖨 Print / Gem som PDF'; }
-    popup.focus();
-    popup.print();
-  } catch(e){
-    if (btn){ btn.disabled = false; btn.textContent = '🖨 Print / Gem som PDF'; }
-    toast('Kunne ikke hente CPR: '+(e.message||e), 'err');
-  }
-}
-
+// Honorarafregningen renderes SERVER-SIDE (Fase 2 i SECURITY-PLAN): Worker'en
+// henter en færdig PDF med CPR indsat fra backend og streamer den til fanen.
+// CPR findes derfor aldrig i browserens Network-JSON eller DOM — kun i den
+// PDF-fil, som den autoriserede admin bevidst åbner. Fakturanr reserveres
+// server-side i samme kald (genbruger eksisterende række hvis den findes).
 function downloadFakturaPDF(){
   if (!EDITING) return;
   const c = EDITING;
   if (!c.id){ toast('Gem kontrakten først','err'); return; }
 
-  // ÅBN print-vinduet SYNKRONT for at bevare user-gesture (ellers blokerer browseren popup'en).
-  const w = window.open('', '_blank');
+  // Åbn fanen SYNKRONT for at bevare user-gesture (ellers blokerer browseren popup'en).
+  const w = window.open('/api/faktura-pdf?contractId=' + encodeURIComponent(c.id), '_blank');
   if (!w){ toast('Popup blokeret — tillad popups for denne side og prøv igen','err'); return; }
-  w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Honorarafregning</title><style>${pdfPrintStyles()}body{display:flex;align-items:center;justify-content:center;min-height:100vh}.loading{font-family:'Inter',sans-serif;color:#8A6F4D;font-size:14px}</style></head><body><div class="loading">Klargør honorarafregning…</div></body></html>`);
-
-  const renderError = (msg) => {
-    if (w.closed) return;
-    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Honorarafregning-fejl</title><style>body{font-family:'Inter',sans-serif;padding:40px;color:#0F213C;max-width:520px;margin:0 auto;text-align:center}h2{color:#A04040}</style></head><body><h2>Kunne ikke klargøre honorarafregning</h2><p>${escapeHtml(msg)}</p><p style="color:#666">Luk vinduet og prøv igen. Der er ikke oprettet nogen række.</p></body></html>`;
-    w.document.open(); w.document.write(html); w.document.close();
-  };
-
-  // Fyld vinduet med faktura + manuel print-knap (auto-print låser parent-vinduet i nogle browsere)
-  const renderInto = (nr) => {
-    if (w.closed) return;
-    const body = _buildFakturaHtml(c, nr);
-    const printBar = `<div style="position:fixed;top:0;left:0;right:0;background:#0F213C;color:#fff;padding:10px 16px;display:flex;align-items:center;justify-content:space-between;font-family:'Inter',sans-serif;font-size:13px;z-index:1000" class="no-print">
-      <span>Honorarafregning · CPR frigives først ved klik på Print (lokal kopi). Drive-arkivet er CPR-løst.</span>
-      <button id="printBtn" onclick="window.opener && window.opener.printHonorarafregningWithCpr(window)" style="background:#fff;color:#0F213C;border:0;padding:8px 16px;border-radius:4px;font-weight:600;cursor:pointer">🖨 Print / Gem som PDF</button>
-    </div>`;
-    const extraStyle = `@media print{.no-print{display:none !important}}body{padding-top:60px}`;
-    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Honorarafregning</title><style>${pdfPrintStyles()}${extraStyle}</style></head><body>${printBar}${body}</body></html>`;
-    w.document.open(); w.document.write(html); w.document.close();
-  };
-
-  // Reservér fakturanr + opret/find række i Fakturaer-fanen.
-  // Backend genbruger eksisterende række hvis kontrakten allerede har en aktiv faktura,
-  // så popup-nummeret matcher altid rækken i Fakturaer-fanen.
-  apiPost('createInvoice', { contractId: c.id, reserveOnly: true })
-    .then(d => {
-      if (d && d.ok && d.invoice && d.invoice.invoiceNr){
-        cacheBust('invoices'); broadcastInvalidate(['invoices']);
-        renderInto(d.invoice.invoiceNr);
-        toast(`Honorarafregning ${d.reused ? 'genfundet' : 'klar'} — print, gem som PDF og arkivér fra Honorarafregninger-fanen`);
-        if (d.warning) toast(d.warning, 'err');
-      } else {
-        const msg = (d && d.error) || 'ukendt fejl';
-        renderError(msg);
-        toast('Kunne ikke klargøre honorarafregning: '+msg,'err');
-      }
-    })
-    .catch(e => {
-      const msg = e.message || String(e);
-      renderError(msg);
-      toast('Kunne ikke klargøre honorarafregning: '+msg,'err');
-    });
+  cacheBust('invoices'); broadcastInvalidate(['invoices']);
+  toast('Honorarafregning klargøres — PDF\'en åbner i en ny fane. Arkivér fra Honorarafregninger-fanen.');
 }
 
 function memberDownloadHonorar(){

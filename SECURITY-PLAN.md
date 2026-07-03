@@ -67,7 +67,7 @@ ikke et krav. Appen kører fint direkte mod Apps Script som i dag.
 | A | Bærer-credential = `sha256(password)` sendes i hver request-body og ligger i `sessionStorage` | `js/02-auth.js:23`, `js/01-core.js:169` | Læsbart i Network + Application-fanen; kan stjæles af XSS/udvidelse og replayes; ikke revokerbart. |
 | B | Åbent endpoint (Access: Anyone) + statisk `APP_TOKEN` i klienten | `js/01-core.js:99` | Ingen ægte adgangskontrol før login; Apps Script ser ikke IP → ingen per-IP-throttling. |
 | C | Ingen Content-Security-Policy | `index.html` `<head>` | Intet XSS-værn i dybden; XSS er den primære vej til at stjæle session/token. |
-| D | CPR/bankoplysninger sendes til browseren og injiceres i print-vindue klient-side | `apps-script/Code.gs` (`getBandCpr`), `js/07-calendar-pdf.js:884` | CPR (personnummer) i Network-svar + print-DOM. GDPR-følsomt. |
+| D | ~~CPR/bankoplysninger sendes til browseren og injiceres i print-vindue klient-side~~ **LUKKET 2026-07-03 (Fase 2):** honorarafregning + Drive-arkiv renderes nu server-side (`renderInvoicePdf`/`archiveInvoiceToDrive` i Code.gs, `/api/faktura-pdf` i Worker'en); `getBandCpr`-endpointet er fjernet. CPR når kun browseren som en færdig PDF-fil, admin bevidst åbner. | `apps-script/Code.gs`, `worker/src/worker.js` | — |
 | E | Svag password-stretching (10k HMAC) + 6-tegns minimum | `apps-script/Code.gs` (`PW_ITERATIONS`), `js/02-auth.js:46` | Knækbart offline hvis Sheet/Identity-store lækker. |
 | F | Hemmeligheder i Script Properties + hardcodet default-token | `apps-script/Code.gs` (`APP_TOKEN_DEFAULT`) | Ingen rotation/secret-manager; default-token offentligt kendt. |
 
@@ -119,9 +119,9 @@ passe; serverer også frontend. Alternativ: Node/Express på Cloud Run for ét s
 - [ ] Sæt alle security-headers + per-IP rate-limiting.
 - **Resultat:** fund A, B, C, F lukket.
 
-### Fase 2 — Server-side rendering af følsomme dokumenter
-- [ ] Flyt CPR/faktura-PDF-generering ind i proxyen.
-- **Resultat:** fund D lukket; CPR findes ikke i nogen browser.
+### Fase 2 — Server-side rendering af følsomme dokumenter — ✅ UDFØRT 2026-07-03
+- [x] CPR/faktura-PDF-generering flyttet server-side (Apps Script renderer, Worker streamer).
+- **Resultat:** fund D lukket; CPR findes ikke i nogen browsers Network-JSON/DOM.
 
 ### Fase 3 — Stærk hashing + (valgfrit) datalag-migration
 - [ ] Argon2id i proxyen (fund E).

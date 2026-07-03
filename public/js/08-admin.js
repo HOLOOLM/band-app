@@ -435,33 +435,13 @@ function drawInvoicesTable(invoices){
 
 /**
  * Arkivér honorarafregning på Drive — uden CPR.
- * Renderer HTML klientside og fjerner CPR-blokke før HTML sendes til server.
- * Server konverterer til PDF og erstatter Drive-filen.
+ * HTML'en renderes server-side (Fase 2): klienten sender kun invoiceId, og
+ * backend bygger selv den CPR-løse version og erstatter Drive-filen.
  */
 async function uploadInvoicePdf(invoiceId, invoiceNr){
-  // Find faktura → kontrakt-id
-  const inv = (CACHE.invoices||[]).find(x => String(x.id) === String(invoiceId));
-  if (!inv){ toast('Honorarafregning ikke fundet','err'); return; }
   toast(`Arkiverer ${invoiceNr} til Drive…`);
   try {
-    const d = await apiPost('getContract', { id: inv.contractId });
-    if (!d.ok) throw new Error(d.error||'Kunne ikke hente kontrakt');
-    const c = d.contract;
-    // Render samme HTML som ved print, men fjern CPR-blokke før upload
-    const body = _buildFakturaHtml(c, invoiceNr);
-    const fullHtml = `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>${pdfPrintStyles()}</style></head><body>${body}</body></html>`;
-    // DOM-baseret fjernelse — robust mod markup-ændringer i fakturaskabelonen
-    const doc = new DOMParser().parseFromString(fullHtml, 'text/html');
-    doc.querySelectorAll('.cpr-block').forEach(el => el.remove());
-    // Post-condition: upload aldrig hvis noget CPR-lignende overlevede
-    const plainText = (doc.body && doc.body.textContent) || '';
-    // Bemærk: ciffer-tjekket kræver bindestreg, ellers ville fx 10-cifrede kontonumre false-positive.
-    // Begge .cpr-block-varianter indeholder ordet "CPR", så /cpr/i fanger enhver overlevende blok.
-    if (/\d{6}\s?-\s?\d{4}/.test(plainText) || /cpr/i.test(plainText)) {
-      throw new Error('CPR-fjernelse fejlede — upload afbrudt af sikkerhedshensyn');
-    }
-    const stripped = '<!DOCTYPE html>' + doc.documentElement.outerHTML;
-    const r = await apiPost('archiveInvoiceToDrive', { invoiceId: invoiceId, html: stripped });
+    const r = await apiPost('archiveInvoiceToDrive', { invoiceId: invoiceId });
     if (!r.ok) throw new Error(r.error||'Drive-fejl');
     cacheBust('invoices'); broadcastInvalidate(['invoices']);
     toast(`${invoiceNr} arkiveret på Drive (uden CPR)`);

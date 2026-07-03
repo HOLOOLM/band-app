@@ -559,7 +559,7 @@ function handle(p) {
       case 'getInvoices':     result = actGetInvoices(p); break;
       case 'updateInvoiceStatus': result = actUpdateInvoiceStatus(p); break;
       case 'deleteInvoice':   result = actDeleteInvoice(p); break;
-      case 'getBandCpr':      result = actGetBandCpr(p); break;
+      case 'renderInvoicePdf': result = actRenderInvoicePdf(p); break;
       case 'archiveInvoiceToDrive': result = actArchiveInvoiceToDrive(p); break;
       case 'updateMyAddress': result = actUpdateMyAddress(p); break;
       case 'exportMyData':    result = actExportMyData(p); break;
@@ -1964,36 +1964,164 @@ function actDeleteInvoice(p) {
   return { ok: false, error: 'Faktura ikke fundet' };
 }
 
-function actGetBandCpr(p) {
-  _requireAdmin(p.email, p.passwordHash);
-  const raw = PropertiesService.getScriptProperties().getProperty(PROP_BAND_CPR_PREFIX + CURRENT_BAND_ID);
-  if (!raw) return { ok: false, error: 'CPR ikke konfigureret for dette band — gå til Indstillinger og udfyld faktureringsoplysninger' };
+// ─── Server-side honorarafregning (Fase 2 i SECURITY-PLAN) ──────────────────
+// CPR dekrypteres og indsættes KUN her på serveren; den færdige PDF streames til
+// browseren via Worker'ens /api/faktura-pdf. CPR når dermed aldrig nogen browsers
+// Network-fane eller DOM. Erstatter det tidligere getBandCpr-endpoint.
+
+function _escHtmlSrv(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+const _DA_MONTHS = ['januar','februar','marts','april','maj','juni','juli','august','september','oktober','november','december'];
+// Samme format som frontendens fmtDate ("5. januar 2026"). Manuel opslagstabel,
+// da Apps Scripts V8-runtime ikke har fuld da-DK ICU-understøttelse.
+function _fmtDateDa(d) {
+  if (!d) return '—';
+  const x = new Date(d);
+  if (isNaN(x)) return String(d);
+  return x.getDate() + '. ' + _DA_MONTHS[x.getMonth()] + ' ' + x.getFullYear();
+}
+function _fmtMoneyDa(n) {
+  return String(Math.round(Number(n) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+}
+
+/** Bandets logo som data-URL til brug i server-renderede dokumenter ('' hvis intet logo). */
+function _bandLogoDataUrl(cfg) {
+  if (!cfg.logoFileId) return '';
   try {
-    return { ok: true, cpr: _decryptCpr(raw) };
+    const blob = DriveApp.getFileById(cfg.logoFileId).getBlob();
+    return 'data:' + blob.getContentType() + ';base64,' + Utilities.base64Encode(blob.getBytes());
   } catch (e) {
-    console.error('actGetBandCpr: dekryptering fejlede [' + (CURRENT_BAND_ID || '-') + ']: ' + (e && e.stack || e));
-    // Integritets-/konfig-fejl er bevidste brugerbeskeder; alt andet generaliseres.
-    return { ok: false, error: e && e.userFacing ? String(e.message) : 'CPR kunne ikke dekrypteres — fejlen er logget.' };
+    Logger.log('_bandLogoDataUrl: logo kunne ikke hentes: ' + e);
+    return '';
   }
 }
 
 /**
+ * Honorarafregnings-skabelonen, renderet server-side.
+ * cpr = streng → fuld afregning med CPR (til admin-download).
+ * cpr = null   → CPR-løs version (til Drive-arkivet).
+ * Tabel-baseret layout (ikke flex) fordi HTML→PDF-konverteringen kun
+ * understøtter simpel CSS. Spejler frontendens tidligere _buildFakturaHtml.
+ */
+function _buildInvoiceHtmlServer(c, invoiceNr, cfg, cpr, logoDataUrl) {
+  const esc = _escHtmlSrv;
+  const arr = c.arrangoer || {};
+  const honorarTxt = c.honorar ? _fmtMoneyDa(c.honorar) + ' kr.' : '—';
+  const paymentTxt = c.paymentTerms === 'Andet' && c.paymentTermsOther
+    ? c.paymentTermsOther : (c.paymentTerms || '');
+  const payeeAddr = String(cfg.payeeAddress || '').split('\n');
+  const contactAddr = String(cfg.contactAddress || '').split('\n');
+  const logoImg = logoDataUrl ? '<img src="' + logoDataUrl + '" alt="" style="height:56px" />' : '';
+  return '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>' +
+    'body{font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#2A2A2A;margin:0;padding:24px}' +
+    'table{border-collapse:collapse;width:100%}' +
+    '@page{margin:10mm;size:A4}' +
+    '</style></head><body>' +
+    '<table style="background:#0F213C;margin-bottom:28px"><tr>' +
+      '<td style="padding:18px 24px">' + logoImg + '</td>' +
+      '<td style="padding:18px 24px;text-align:right;color:#ffffff;font-size:24px;font-weight:bold">Honorar afregning</td>' +
+    '</tr></table>' +
+    '<table style="margin-bottom:18px"><tr>' +
+      '<td style="vertical-align:top;font-size:12px;line-height:1.6;width:55%">' +
+        '<strong>' + esc(cfg.bandName || '') + '</strong><br/>' +
+        (cfg.payeeName ? 'V/ ' + esc(cfg.payeeName) + '<br/>' : '') +
+        payeeAddr.filter(Boolean).map(esc).join('<br/>') +
+        (cpr ? '<br/>CPR: ' + esc(cpr) : '') +
+      '</td>' +
+      '<td style="vertical-align:top;font-size:12px;line-height:1.7">' +
+        esc(arr.name || '') + '<br/>' +
+        esc(arr.address || '') + '<br/>' +
+        esc([arr.postnr, arr.city].filter(Boolean).join(' ')) + '<br/><br/>' +
+        'Dato: ' + esc(_fmtDateDa(c.date)) + '<br/>' +
+        'Afregningsnr: ' + esc(invoiceNr) +
+      '</td>' +
+    '</tr></table>' +
+    '<table style="border-top:1px solid #B8A88A;border-bottom:1px solid #B8A88A;margin-bottom:18px"><tr>' +
+      '<td style="padding:14px 0;font-size:13px">Honorarafregning for arrangement d. <strong>' + esc(_fmtDateDa(c.date)) + '</strong></td>' +
+      '<td style="padding:14px 0;text-align:right;font-weight:bold;color:#0F213C;font-size:15px">' + esc(honorarTxt) + '</td>' +
+    '</tr></table>' +
+    '<div style="height:280px"></div>' +
+    '<div style="border-top:1px solid #B8A88A;padding-top:12px;font-size:11px;line-height:1.7">' +
+      'Betalingsbetingelser: <strong>' + esc(paymentTxt) + '</strong><br/>' +
+      'Beløbet indbetales til vores bank ' + esc(cfg.bankName || '') + '<br/>' +
+      'Reg: ' + esc(cfg.bankReg || '') + '&nbsp;&nbsp;Kto: ' + esc(cfg.bankKto || '') + '<br/>' +
+      esc((c.venue && c.venue.name) || 'Spillested') + ' bedes anført ved overførsel' +
+      (cpr ? '<br/>Beløbet indberettes på Cpr. ' + esc(cpr) : '') +
+    '</div>' +
+    '<div style="margin-top:24px;border-top:1px solid #D9CFBE;padding-top:10px;font-size:10px;color:#6A5A40">' +
+      [cfg.bandName, cfg.contactName, contactAddr[0], contactAddr[1], cfg.contactPhone ? 'Tel: ' + cfg.contactPhone : '', cfg.contactEmail ? 'Email: ' + cfg.contactEmail : '']
+        .filter(Boolean).map(esc).join(' · ') +
+    '</div>' +
+    '</body></html>';
+}
+
+function actRenderInvoicePdf(p) {
+  _requireAdmin(p.email, p.passwordHash);
+  if (!p.contractId) return { ok: false, error: 'contractId mangler' };
+
+  // Reservér/genbrug fakturanr + Fakturaer-række (samme logik som hidtil).
+  const res = actCreateInvoice(Object.assign({}, p, { reserveOnly: true }));
+  if (!res || !res.ok) return res || { ok: false, error: 'Kunne ikke reservere fakturanr' };
+  const invoiceNr = res.invoice.invoiceNr;
+
+  const raw = _readAll('Contracts').find(x => String(x.id) === String(p.contractId));
+  if (!raw) return { ok: false, error: 'Kontrakt ikke fundet' };
+  const c = _serializeContract(raw);
+
+  const rawCpr = PropertiesService.getScriptProperties().getProperty(PROP_BAND_CPR_PREFIX + CURRENT_BAND_ID);
+  if (!rawCpr) return { ok: false, error: 'CPR ikke konfigureret for dette band — gå til Indstillinger og udfyld faktureringsoplysninger' };
+  let cpr;
+  try {
+    cpr = _decryptCpr(rawCpr);
+  } catch (e) {
+    console.error('actRenderInvoicePdf: dekryptering fejlede [' + (CURRENT_BAND_ID || '-') + ']: ' + (e && e.stack || e));
+    return { ok: false, error: e && e.userFacing ? String(e.message) : 'CPR kunne ikke dekrypteres — fejlen er logget.' };
+  }
+
+  const cfg = getBandConfig();
+  const html = _buildInvoiceHtmlServer(c, invoiceNr, cfg, cpr, _bandLogoDataUrl(cfg));
+  const fileName = 'Honorarafregning ' + invoiceNr;
+  let pdfBlob = null;
+  try { pdfBlob = Utilities.newBlob(html, 'text/html', fileName + '.html').getAs('application/pdf'); }
+  catch (e) { Logger.log('renderInvoicePdf: direkte HTML→PDF fejlede, prøver Drive-konvertering: ' + e); }
+  if (!pdfBlob) pdfBlob = _htmlToPdfBlob(html, fileName);
+  if (!pdfBlob) return { ok: false, error: 'PDF-konvertering fejlede — fejlen er logget.' };
+
+  return {
+    ok: true,
+    pdfBase64: Utilities.base64Encode(pdfBlob.getBytes()),
+    fileName: fileName + '.pdf',
+    invoiceNr: invoiceNr,
+    reused: !!res.reused,
+    warning: res.warning || ''
+  };
+}
+
+/**
  * Arkivér en CPR-løs version af honorarafregningen på Drive.
- * Klienten sender HTML uden CPR-injektion → server konverterer til PDF → erstatter Drive-fil.
+ * HTML'en renderes SERVER-SIDE uden CPR (Fase 2) — klienten sender kun invoiceId.
+ * Klient-leveret HTML accepteres ikke længere (den kunne indeholde vilkårligt indhold).
  */
 function actArchiveInvoiceToDrive(p) {
   _requireAdmin(p.email, p.passwordHash);
   if (!p.invoiceId) return { ok: false, error: 'invoiceId mangler' };
-  if (!p.html) return { ok: false, error: 'html mangler' };
 
   const inv = _readAll('Invoices').find(x => String(x.id) === String(p.invoiceId));
   if (!inv) return { ok: false, error: 'Faktura ikke fundet' };
 
   const c = _readAll('Contracts').find(x => String(x.id) === String(inv.contractId));
+  if (!c) return { ok: false, error: 'Kontrakten bag honorarafregningen findes ikke længere' };
   const dateObj = inv.date ? new Date(inv.date) : new Date();
   const year = dateObj.getFullYear();
   const fileName = 'Honorarafregning ' + inv.invoiceNr + ' — ' + ((c && c.venue && _parseJson(c.venue) && _parseJson(c.venue).name) || inv.contractId);
   const folder = _getInvoiceFolder(year);
+
+  // CPR-løs server-render (cpr = null udelader CPR-linjerne).
+  const cfg = getBandConfig();
+  const archiveHtml = _buildInvoiceHtmlServer(_serializeContract(c), inv.invoiceNr, cfg, null, _bandLogoDataUrl(cfg));
 
   // Trash gammel Drive-fil hvis den findes
   let trashWarning = null;
@@ -2005,8 +2133,11 @@ function actArchiveInvoiceToDrive(p) {
     }
   }
 
-  const pdfBlob = _htmlToPdfBlob(String(p.html), fileName);
-  if (!pdfBlob) return { ok: false, error: 'PDF-konvertering fejlede (kræver Advanced Drive Service)' };
+  let pdfBlob = null;
+  try { pdfBlob = Utilities.newBlob(archiveHtml, 'text/html', fileName + '.html').getAs('application/pdf'); }
+  catch (e) { Logger.log('archiveInvoiceToDrive: direkte HTML→PDF fejlede, prøver Drive-konvertering: ' + e); }
+  if (!pdfBlob) pdfBlob = _htmlToPdfBlob(archiveHtml, fileName);
+  if (!pdfBlob) return { ok: false, error: 'PDF-konvertering fejlede — fejlen er logget.' };
   const file = folder.createFile(pdfBlob);
   _lockdownFile(file);
 
@@ -3112,7 +3243,8 @@ function _getAssetsFolder() {
 
 /**
  * Returnerer bankoplysninger + CPR-status til autentificeret admin.
- * CPR returneres IKKE i klartekst her — brug getBandCpr til faktura-rendering.
+ * CPR returneres ALDRIG i klartekst til klienten — faktura-rendering med CPR
+ * sker udelukkende server-side via renderInvoicePdf.
  */
 function actAdminGetBillingInfo(p) {
   _requireAdmin(p.email, p.passwordHash);
