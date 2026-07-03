@@ -1,0 +1,175 @@
+﻿<!DOCTYPE html>
+<html lang="da">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Band-app</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!-- Ekstra fonte til de neutrale temaer (font skifter pr. tema) -->
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:wght@400;500;600&family=Fraunces:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<!-- LOGIN VIEW -->
+<div id="loginView" class="login-wrap">
+  <div class="card login-card">
+    <div class="login-brand">
+      <img src="" class="band-logo" alt="" style="height:72px;object-fit:contain;display:block;margin:0 auto 4px">
+    </div>
+    <h1 class="serif">Velkommen tilbage</h1>
+    <p class="lede">Log ind for at se dine bookinger og honorar.</p>
+    <div id="loginErr" class="login-err"></div>
+    <div class="login-form">
+      <div class="field" style="margin-bottom:14px">
+        <label>Email</label>
+        <input id="emailInput" class="input" type="email" autocomplete="email" placeholder="navn@example.com">
+      </div>
+      <div class="field" style="margin-bottom:18px">
+        <label>Adgangskode</label>
+        <input id="passwordInput" class="input" type="password" autocomplete="current-password" placeholder="••••••••">
+      </div>
+      <button id="loginBtn" class="btn btn-primary btn-lg" style="width:100%;justify-content:center">Log ind</button>
+      <div id="loginStatus" class="login-status"><span class="spinner"></span>Henter...</div>
+    </div>
+  </div>
+</div>
+
+<!-- VIEW CHOOSER (admin vælger admin-panel vs musikervisning) -->
+<div id="viewChooser" class="login-wrap" style="display:none">
+  <div class="card login-card" style="max-width:480px">
+    <div class="login-brand">
+      <img src="" class="band-logo" alt="" style="height:56px;object-fit:contain;display:block;margin:0 auto 4px">
+    </div>
+    <h1 class="serif" style="text-align:center;margin-bottom:6px">Vælg visning</h1>
+    <p style="text-align:center;color:var(--cream-mute);font-size:13px;margin-bottom:20px">Du er logget ind som administrator</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <button onclick="enterApp('admin')" style="padding:20px 12px;display:flex;flex-direction:column;align-items:center;gap:8px;background:var(--ink-soft);border:1px solid var(--ink-line);border-radius:8px;cursor:pointer;color:var(--cream);font:inherit">
+        <span style="font-size:26px;line-height:1">⚙</span>
+        <strong style="font-size:14px">Admin-panel</strong>
+        <span style="font-size:11px;color:var(--cream-mute)">Administrér bandet</span>
+      </button>
+      <button onclick="enterApp('member')" style="padding:20px 12px;display:flex;flex-direction:column;align-items:center;gap:8px;background:var(--ink-soft);border:1px solid var(--ink-line);border-radius:8px;cursor:pointer;color:var(--cream);font:inherit">
+        <span style="font-size:26px;line-height:1">◉</span>
+        <strong style="font-size:14px">Musikervisning</strong>
+        <span style="font-size:11px;color:var(--cream-mute)">Se som bandmedlem</span>
+      </button>
+    </div>
+    <div style="margin-top:20px;text-align:center">
+      <button class="btn btn-ghost btn-sm" onclick="logout()" style="font-size:12px;color:var(--cream-mute)">Log ud</button>
+    </div>
+  </div>
+</div>
+
+<!-- CHANGE PASSWORD VIEW -->
+<div id="changePwView" class="login-wrap" style="display:none">
+  <div class="card login-card">
+    <div class="login-brand">
+      <img src="" class="band-logo" alt="" style="height:72px;object-fit:contain;display:block;margin:0 auto 4px">
+    </div>
+    <h1 class="serif">Vælg ny adgangskode</h1>
+    <p class="lede">Du bruger en midlertidig kode. Sæt din egen for at fortsætte.</p>
+    <div id="changePwErr" class="login-err"></div>
+    <div class="field" style="margin-bottom:12px"><label>Ny adgangskode</label><input id="newPw1" class="input" type="password" placeholder="Min. 12 tegn"></div>
+    <div class="field" style="margin-bottom:18px"><label>Gentag ny adgangskode</label><input id="newPw2" class="input" type="password"></div>
+    <button id="changePwBtn" class="btn btn-primary btn-lg" style="width:100%;justify-content:center">Gem</button>
+  </div>
+</div>
+
+<!-- ADMIN APP -->
+<div id="adminApp" class="admin-shell" style="display:none">
+  <aside class="sidebar">
+    <div class="sidebar-brand" style="flex-direction:column;align-items:flex-start;gap:4px">
+      <img src="" class="band-logo" alt="" style="height:36px;object-fit:contain;max-width:180px">
+      <span style="font-family:var(--font-mono);font-size:9px;letter-spacing:.2em;text-transform:uppercase;color:var(--cream-mute)">Backstage</span>
+    </div>
+    <div class="nav-group">
+      <div class="nav-item" data-route="dashboard"><span class="icn">◐</span> Dashboard</div>
+      <div class="nav-item" data-route="contracts"><span class="icn">◫</span> Kontrakter</div>
+      <div class="nav-item" data-route="members"><span class="icn">◉</span> Medlemmer</div>
+      <div class="nav-item" data-route="honorar"><span class="icn">⌗</span> Honorar</div>
+      <div class="nav-item" data-route="invoices"><span class="icn">¤</span> Honorarafregninger</div>
+    </div>
+    <div class="sidebar-foot">
+      <div class="nav-item" data-route="settings"><span class="icn">⚙</span> Indstillinger</div>
+      <div class="nav-item" onclick="enterApp('member')" style="color:var(--cream-mute)"><span class="icn">◉</span> Musikervisning</div>
+      <div class="nav-item" id="logoutAdmin"><span class="icn">←</span> Log ud</div>
+    </div>
+  </aside>
+  <main class="main" id="adminMain"></main>
+  <nav class="mobile-nav" id="adminMobileNav">
+    <div class="mn-item" data-route="dashboard"><span class="mn-icn">◐</span>Dashboard</div>
+    <div class="mn-item" data-route="contracts"><span class="mn-icn">◫</span>Kontrakter</div>
+    <div class="mn-item" data-route="members"><span class="mn-icn">◉</span>Medlemmer</div>
+    <div class="mn-item" data-route="honorar"><span class="mn-icn">⌗</span>Honorar</div>
+    <div class="mn-item" data-route="invoices"><span class="mn-icn">¤</span>Honorarafregninger</div>
+    <div class="mn-item" data-route="settings"><span class="mn-icn">⚙</span>Indstillinger</div>
+  </nav>
+</div>
+
+<!-- MEMBER APP -->
+<div id="memberApp" class="member-app" style="display:none">
+  <header class="member-topbar">
+    <div class="me">
+      <div class="avatar" id="memberAvatar">–</div>
+      <div>
+        <div class="eyebrow warm" data-band-tagline></div>
+        <div class="name serif" id="memberName">–</div>
+      </div>
+    </div>
+    <div class="mode-pill">
+      <button data-mview="jobs" class="on">Mine jobs</button>
+      <button data-mview="honorar">Honorar</button>
+      <button data-mview="profil">Min profil</button>
+    </div>
+    <button id="switchToAdmin" class="btn btn-ghost btn-sm" onclick="enterApp('admin')" style="display:none">⚙ Admin</button>
+    <button id="logoutMember" class="btn btn-ghost btn-sm">Log ud</button>
+  </header>
+  <div class="member-main" id="memberMain"></div>
+</div>
+
+<!-- DRAWER (member edit) -->
+<div id="drawerBackdrop" class="drawer-backdrop"></div>
+<aside id="drawer" class="drawer"></aside>
+
+<!-- HONORAR CALCULATOR MODAL -->
+<div id="attendeesPopup" style="display:none;position:fixed;inset:0;background:rgba(8,17,31,.82);backdrop-filter:blur(6px);z-index:200;align-items:center;justify-content:center" onclick="if(event.target===this)closeAttendeesPopup()">
+  <div style="background:var(--ink);border:1px solid var(--ink-line);border-radius:var(--radius-lg);width:480px;max-width:calc(100vw - 32px);max-height:82vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.6)">
+    <div style="padding:18px 22px;border-bottom:1px solid var(--ink-line);display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
+      <div id="attendeesPopupHead"></div>
+      <button class="btn btn-text" onclick="closeAttendeesPopup()" style="font-size:18px">✕</button>
+    </div>
+    <div id="attendeesPopupBody" style="padding:18px 22px"></div>
+  </div>
+</div>
+
+<div id="honorarCalcBackdrop" style="display:none;position:fixed;inset:0;background:rgba(8,17,31,.82);backdrop-filter:blur(6px);z-index:200;align-items:center;justify-content:center">
+  <div style="background:var(--ink);border:1px solid var(--ink-line);border-radius:var(--radius-lg);width:500px;max-width:calc(100vw - 32px);max-height:82vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.6)">
+    <div style="padding:20px 24px;border-bottom:1px solid var(--ink-line);display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <div class="eyebrow warm">Honorarregner</div>
+        <h3 style="font-family:var(--font-display);font-size:22px;margin:6px 0 0;font-weight:400">Fordel honorar</h3>
+      </div>
+      <button class="btn btn-text" onclick="closeHonorarCalc()" style="font-size:18px">✕</button>
+    </div>
+    <div id="honorarCalcBody" style="padding:20px 24px"></div>
+    <div style="padding:14px 24px;border-top:1px solid var(--ink-line);display:flex;gap:10px;justify-content:flex-end">
+      <button class="btn btn-ghost" onclick="closeHonorarCalc()">Annuller</button>
+      <button class="btn btn-primary" onclick="applyHonorarCalc()">Anvend fordeling</button>
+    </div>
+  </div>
+</div>
+
+<script src="js/01-core.js"></script>
+<script src="js/02-auth.js"></script>
+<script src="js/03-dashboard.js"></script>
+<script src="js/04-contracts.js"></script>
+<script src="js/05-honorar.js"></script>
+<script src="js/06-members.js"></script>
+<script src="js/07-calendar-pdf.js"></script>
+<script src="js/08-admin.js"></script>
+<script src="js/09-boot.js"></script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+name = "band-app"
+main = "src/worker.js"
+compatibility_date = "2024-11-01"
+
+# Serverer frontend-filerne fra public/
+[assets]
+directory = "../public"
+binding = "ASSETS"
+
+# Session-store (id indsættes af `wrangler kv namespace create SESSIONS`)
+[[kv_namespaces]]
+binding = "SESSIONS"
+id = "c0a52403e89a44ea95e9f94c2e4e900e"
+
+# Ikke-hemmelige variabler
+[vars]
+SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzc3u_E4EIZLZXiDoJfSAZyHS0wWJCib_evu98htcSX6qzsZhraxzTIeeQ-gWjpq1o/exec"
