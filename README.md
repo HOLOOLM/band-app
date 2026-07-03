@@ -102,3 +102,5 @@ Se `settings-template.md`.
 - Cross-band SSO (samme email i flere bands deler ikke password — Design 2).
 - Struktureret rider-editor (vi bruger fri rider-tekst eller PDF-upload).
 - Self-service-onboarding for bands (kun operatøren onboarder).
+
+<!-- Auto-deploy via GitHub → Cloudflare Workers Builds aktiveret 2026-07-03 -->
