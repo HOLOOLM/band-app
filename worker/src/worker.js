@@ -78,9 +78,15 @@ async function ipRateLimited(request, env) {
   const ip = request.headers.get('CF-Connecting-IP') || 'ukendt';
   const rlKey = 'rl:' + ip;
   const n = Number(await env.SESSIONS.get(rlKey) || 0);
-  if (n >= 20) return true;
-  await env.SESSIONS.put(rlKey, String(n + 1), { expirationTtl: 900 }); // 20 forsøg / 15 min pr. IP
-  return false;
+  return n >= 20; // 20 mislykkede forsøg / 15 min pr. IP
+}
+// Kaldes KUN når login fejlede — succesfulde logins (fx et helt bands medlemmer,
+// der logger ind fra samme spillested-WiFi/NAT) skal ikke kunne låse IP'en ude.
+async function ipRateLimitPenalize(request, env) {
+  const ip = request.headers.get('CF-Connecting-IP') || 'ukendt';
+  const rlKey = 'rl:' + ip;
+  const n = Number(await env.SESSIONS.get(rlKey) || 0);
+  await env.SESSIONS.put(rlKey, String(n + 1), { expirationTtl: 900 });
 }
 
 // ─── Login ───────────────────────────────────────────────────────────────────
@@ -95,11 +101,15 @@ async function apiLogin(request, env) {
   if (await ipRateLimited(request, env)) return json({ ok: false, error: 'For mange forsøg — prøv igen senere' }, 429);
 
   const d = await callAppsScript(env, { action: 'login', email, passwordHash, bandId });
-  if (!d || !d.ok) return json(d || { ok: false, error: 'Login mislykkedes' });
+  if (!d || !d.ok) { await ipRateLimitPenalize(request, env); return json(d || { ok: false, error: 'Login mislykkedes' }); }
 
+  // Gem det signerede medlems-token i stedet for password-hashet: hver senere
+  // action-kald verificeres med én HMAC-tjek fremfor 10.000 hash-iterationer,
+  // og et KV-lækage afslører ikke længere et password-ækvivalent credential.
+  const memberToken = d.memberToken;
+  delete d.memberToken; // må aldrig nå browseren
   const sid = crypto.randomUUID();
-  await saveSession(env, sid, { email, passwordHash, bandId, role: d.role || 'member', kind: 'member' });
-  // Send login-svaret videre, men intet credential — browseren får kun cookien.
+  await saveSession(env, sid, { email, passwordHash: memberToken || passwordHash, bandId, role: d.role || 'member', kind: 'member' });
   return json(d, 200, { 'Set-Cookie': sessionCookie(sid) });
 }
 
@@ -109,7 +119,7 @@ async function apiOperatorLogin(request, env) {
   const passwordHash = String(body.passwordHash || '');
   if (await ipRateLimited(request, env)) return json({ ok: false, error: 'For mange forsøg — prøv igen senere' }, 429);
   const d = await callAppsScript(env, { action: 'operatorLogin', email, passwordHash });
-  if (!d || !d.ok) return json(d || { ok: false, error: 'Login mislykkedes' });
+  if (!d || !d.ok) { await ipRateLimitPenalize(request, env); return json(d || { ok: false, error: 'Login mislykkedes' }); }
 
   const sid = crypto.randomUUID();
   // Operatør-tokenet bliver server-side i KV — aldrig i browseren.
@@ -123,11 +133,14 @@ async function apiSession(request, env) {
   const sess = await loadSession(request, env);
   if (!sess) return json({ ok: false });
   if (sess.data.kind === 'operator') return json({ ok: true, role: 'operator' });
-  // Hent friske medlemsdata via et almindeligt login-kald med de gemte credentials.
+  // 'refreshSession' i stedet for 'login': et udløbet medlems-token (normalt efter
+  // 8t, fx en fane der genindlæses) må ikke tælle som et forkert login-forsøg —
+  // ellers kan flere samtidige fane-genindlæsninger udløse konto-lockout.
   const d = await callAppsScript(env, {
-    action: 'login', email: sess.data.email, passwordHash: sess.data.passwordHash, bandId: sess.data.bandId
+    action: 'refreshSession', email: sess.data.email, passwordHash: sess.data.passwordHash, bandId: sess.data.bandId
   });
   if (!d || !d.ok) { await env.SESSIONS.delete('sess:' + sess.sid); return json({ ok: false }, 200, { 'Set-Cookie': clearCookie() }); }
+  if (d.memberToken) { sess.data.passwordHash = d.memberToken; delete d.memberToken; } // rul tokenet videre
   await saveSession(env, sess.sid, sess.data); // forny TTL
   return json(d, 200, { 'Set-Cookie': sessionCookie(sess.sid) });
 }
@@ -151,8 +164,9 @@ async function apiChangePassword(request, env) {
     oldHash: sess.data.passwordHash, newHash
   });
   if (!d || !d.ok) return json(d || { ok: false, error: 'Kunne ikke skifte adgangskode' });
-  // Opdatér det gemte credential så efterfølgende kald stadig autentificerer.
-  sess.data.passwordHash = newHash;
+  // Opdatér det gemte credential med det nyudstedte token (falder tilbage til det
+  // rå hash hvis backend af en eller anden grund ikke leverede et — login virker stadig).
+  sess.data.passwordHash = d.memberToken || newHash;
   await saveSession(env, sess.sid, sess.data);
   return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie(sess.sid) });
 }
@@ -160,14 +174,24 @@ async function apiChangePassword(request, env) {
 // ─── Generelt proxy-kald for ALLE actions ──────────────────────────────────────
 
 async function apiCall(request, env) {
-  const sess = await loadSession(request, env);
-  if (!sess) return json({ ok: false, error: 'Ikke logget ind' }, 401);
-
-  const body = await request.json();
+  let body;
+  try { body = await request.json(); } catch (e) { return json({ ok: false, error: 'Ugyldig request' }, 400); }
   const action = String(body.action || '');
   // Disse har dedikerede routes (sætter/opdaterer cookie/session) — ikke tilladt her.
-  if (action === 'login' || action === 'operatorLogin' || action === 'changePassword') {
+  if (action === 'login' || action === 'refreshSession' || action === 'operatorLogin' || action === 'changePassword') {
     return json({ ok: false, error: 'Forbudt' }, 403);
+  }
+
+  const sess = await loadSession(request, env);
+  if (!sess) {
+    // getConfig er bevidst offentlig i Apps Script (verificerer ikke auth) — den
+    // driver login-skærmens branding og skal kunne hentes FØR nogen er logget ind.
+    // Uden denne undtagelse fejler ethvert boot uden en eksisterende session-cookie
+    // med 401, og login-skærmen falder tilbage til de indbyggede defaults (intet
+    // logo/bandnavn/tema) for alle førstegangsbesøgende — netop den målgruppe
+    // endpointet findes for.
+    if (action === 'getConfig') return json(await callAppsScript(env, body));
+    return json({ ok: false, error: 'Ikke logget ind' }, 401);
   }
 
   // Injicér credential/token server-side ud fra sessionen.

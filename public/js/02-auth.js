@@ -67,8 +67,28 @@ async function doChangePassword(){
   }
 }
 
+// Nulstiller alt lokalt cachet data fra den udlogget bruger, så et efterfølgende
+// login i samme fane (delt maskine) ikke kortvarigt kan vise forrige brugers
+// kontrakter/honorar, før nye data er hentet.
+function _resetAppState(){
+  CACHE = { members: null, contracts: null, dashboard: null, invoices: null, _stamp: {} };
+  if (typeof MEMBER_JOBS_CACHE !== 'undefined') MEMBER_JOBS_CACHE = null;
+  if (typeof MEMBER_JOBS_CACHE_ALL !== 'undefined') MEMBER_JOBS_CACHE_ALL = null;
+  window._lastHonorar = null;
+  window._lastAdminHonorar = null;
+  ADMIN_ROUTE = 'dashboard';
+  ADMIN_STATE = {
+    contractFilter: 'alle', contractSearch: '', memberFilter: 'alle',
+    contractType: 'alle', contractFra: '', contractTil: '',
+    contractArrangoer: '', contractHonorarMin: '', contractHonorarMax: '',
+    contractSort: 'date_desc',
+    contractTimeframe: 'kommende'
+  };
+}
+
 function logout(){
   SESSION = null;
+  _resetAppState();
   // Slet server-side session + ryd cookien. Fire-and-forget; UI'et nulstilles uanset.
   try { fetch('/api/logout', { method: 'POST', credentials: 'same-origin' }).catch(()=>{}); } catch(e){}
   try {

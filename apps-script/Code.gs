@@ -56,6 +56,7 @@ const SETTINGS_DEFAULTS = {
   riderText: '',
   riderTemplates: '',  // JSON: { "<kontrakttype>": { intro, points:[] } }. Tom = brug indbyggede defaults i frontend
   sceneplanFileId: '', // Drive file ID til sceneplan-billede (PNG/JPG). Indlejres som side 4 på Festival-kontrakter
+  sceneplanJson: '',   // Redigerbar tilstand (JSON) fra sceneplan-editoren — bruges KUN til at genåbne/redigere videre, aldrig sendt til arrangører
 
   contactName: '',
   contactEmail: '',
@@ -111,6 +112,7 @@ const PROP_IDENTITY_PREFIX = 'IDENTITY_';               // IDENTITY_<sha256(emai
 const PROP_APP_TOKEN = 'APP_SHARED_TOKEN';              // delt hemmelighed der valideres på alle doPost-kald (jf. _verifyAppToken)
 
 const OPERATOR_TOKEN_TTL_SEC = 8 * 60 * 60;             // operatør-session gyldig i 8 timer
+const MEMBER_TOKEN_TTL_SEC = 8 * 60 * 60;               // medlems-token (se _issueMemberToken) gyldig i 8 timer
 
 // Delt app-token (lavt sikkerhedsniveau): bremser casual scraping/abuse af det
 // offentlige /exec-endpoint. Værdien er bevidst synlig i index.html — den
@@ -201,10 +203,34 @@ function bootstrapMaster_RUN_ME() {
     '     Execute as: Me  |  Access: Anyone',
     '  2. Kopier /exec-URL → indsæt i index.html SCRIPT_URL',
     '  3. Kør setOperator_RUN_ME() med din email + et password (operatør-login)',
-    '  4. Onboard bands i appen: åbn index.html?band=__operator → "+ Nyt band"',
+    '  4. Kør rotateAppSharedToken_RUN_ME() for at erstatte APP_TOKEN_DEFAULT',
+    '  5. Onboard bands i appen: åbn index.html?band=__operator → "+ Nyt band"',
     '────────────────────────────────────────'
   ].join('\n'));
   return secret;
+}
+
+/**
+ * Erstatter den hardcodede APP_TOKEN_DEFAULT (synlig i denne offentlige kildekode)
+ * med en tilfældig, hemmelig værdi gemt i Script Properties. Da Worker'en injicerer
+ * tokenet server-side (aldrig i browseren), er dette den eneste manuelle handling
+ * der kræves — kør én gang, ingen kode skal ændres bagefter.
+ */
+function rotateAppSharedToken_RUN_ME() {
+  const token = _secureRandomBase64(24);
+  PropertiesService.getScriptProperties().setProperty(PROP_APP_TOKEN, token);
+  Logger.log([
+    '────────────────────────────────────────',
+    'APP_SHARED_TOKEN roteret.',
+    'Ny værdi (kopiér NU — vises kun her):',
+    '  ' + token,
+    '',
+    'Opdatér Worker-secreten APP_TOKEN med denne værdi:',
+    '  cd worker && npx wrangler secret put APP_TOKEN',
+    '(indsæt værdien når du bliver bedt om det), og deploy Worker igen.',
+    '────────────────────────────────────────'
+  ].join('\n'));
+  return token;
 }
 
 /**
@@ -538,6 +564,7 @@ function handle(p) {
 
     switch (action) {
       case 'login':           result = actLogin(p); break;
+      case 'refreshSession':  result = actRefreshSession(p); break;
       case 'changePassword':  result = actChangePassword(p); break;
       case 'trackLogin':      result = actTrackLogin(p); break;
       case 'getMembers':      result = actGetMembers(p); break;
@@ -799,6 +826,15 @@ function _syncIdentityPassword(email, pf) {
  */
 function _verifyIdentity(email, hash) {
   if (!email || !hash) return null;
+  const normEmail = String(email).toLowerCase().trim();
+  if (String(hash).indexOf('mt:') === 0) {
+    const data = _decodeMemberToken(hash);
+    if (!data || data.email !== normEmail) return null;
+    const id = _loadIdentity(email);
+    if (!id || !id.passwordHash) return null;
+    if (data.pwFp !== sha256(String(id.passwordHash)).slice(0, 16)) return null;
+    return id;
+  }
   const id = _loadIdentity(email);
   if (!id || !id.passwordHash || !id.pwSalt) return null;
   if (!_verifyHash(hash, id.pwSalt, id.passwordHash)) return null;
@@ -820,8 +856,70 @@ function _ensureColumn(name, col) {
   if (headers.indexOf(col) === -1) sh.getRange(1, headers.length + 1).setValue(col);
 }
 
+// ─── Medlems-token (afløser for at sende password-hash på hvert kald) ───────
+// Login sender password-hash én gang; herefter bruger klienten et kortlivet,
+// HMAC-signeret token ("mt:<payload>.<sig>") i stedet for at gentage de 10.000
+// hash-iterationer på hvert kald. Tokenet er IKKE bandId-bundet (matcher SSO-
+// designet: samme login virker på tværs af bands), men er bundet til et
+// fingeraftryk af det aktuelt gemte password — skifter brugeren password,
+// bliver alle udestående tokens ugyldige med det samme (samme egenskab som
+// password-hash-vejen allerede havde).
+function _currentAuthFingerprint(email, m) {
+  const identity = _loadIdentity(email);
+  const src = (identity && identity.passwordHash) ? identity.passwordHash : ((m && m.passwordHash) || '');
+  // NB: hash hele strengen, ikke bare et slice af den — passwordHash har formatet
+  // "pbkdf2$10000$<base64>" med et 13-tegns fast præfiks, så et slice(0,16) af
+  // strengen selv ville kun indeholde ~3 reelle tegn af det faktiske hash og gøre
+  // fingeraftrykket for nemt at gætte/kollidere med efter et password-skift.
+  return sha256(String(src)).slice(0, 16);
+}
+
+function _issueMemberToken(email, m) {
+  const exp = Date.now() + MEMBER_TOKEN_TTL_SEC * 1000;
+  const payload = Utilities.base64EncodeWebSafe(JSON.stringify({
+    role: 'member',
+    email: String(email).toLowerCase().trim(),
+    pwFp: _currentAuthFingerprint(email, m),
+    exp: exp
+  })).replace(/=+$/, '');
+  return 'mt:' + payload + '.' + _signOperatorPayload(payload);
+}
+
+/** Afkoder + verificerer signatur/udløb på et medlems-token. Returnerer payload eller null. */
+function _decodeMemberToken(hash) {
+  const token = String(hash).slice(3); // fjern "mt:"-præfiks
+  const dot = token.indexOf('.');
+  if (dot < 1) return null;
+  const payload = token.substring(0, dot);
+  const sig = token.substring(dot + 1);
+  const expected = _signOperatorPayload(payload);
+  if (sig.length !== expected.length) return null;
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ sig.charCodeAt(i);
+  if (diff !== 0) return null;
+  let data;
+  try { data = JSON.parse(Utilities.newBlob(Utilities.base64DecodeWebSafe(payload)).getDataAsString('UTF-8')); }
+  catch (e) { return null; }
+  if (!data || data.role !== 'member') return null;
+  if (!data.exp || Date.now() > Number(data.exp)) return null;
+  data.email = String(data.email || '').toLowerCase().trim();
+  return data;
+}
+
 function _verifyAuth(email, hash) {
   if (!email || !hash) return null;
+  const normEmail = String(email).toLowerCase().trim();
+
+  // Token-vej: ingen hashing, kun signatur- + fingeraftryks-tjek.
+  if (String(hash).indexOf('mt:') === 0) {
+    const data = _decodeMemberToken(hash);
+    if (!data || data.email !== normEmail) return null;
+    const m = _findMemberByEmail(email);
+    if (!m) return null;
+    if (data.pwFp !== _currentAuthFingerprint(email, m)) return null; // password ændret siden token blev udstedt
+    return m;
+  }
+
   // Man skal være medlem af DETTE band for at få adgang — også med SSO.
   const m = _findMemberByEmail(email);
   if (!m) return null;
@@ -899,17 +997,39 @@ function _colIndexOrThrow(headers, name) {
   return i;
 }
 
+// Request-scoped cache: flere actions læser samme fane 2-4× i ét kald (fx
+// actGetMyHonorar læser Attendances to gange). `let` nulstilles automatisk
+// pr. HTTP-request (frisk V8-context, jf. note øverst i filen), så caches ALDRIG
+// på tværs af requests. Nøglet på CURRENT_BAND_ID + navn, fordi cross-band
+// actions (_forEachCrossBand) skifter CURRENT_BAND_ID midt i requesten og
+// dermed også hvilket Sheet der reelt læses fra.
+let _sheetReadCache = {};
+
 function _readAll(name) {
+  const cacheKey = CURRENT_BAND_ID + ':' + name;
+  const hit = _sheetReadCache[cacheKey];
+  if (hit) return hit;
   const sh = _getSheet(name);
   const lastRow = sh.getLastRow();
-  if (lastRow < 2) return [];
-  const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
-  const data = sh.getRange(2, 1, lastRow - 1, headers.length).getValues();
-  return data.map(row => {
-    const obj = {};
-    headers.forEach((h, i) => { obj[h] = row[i]; });
-    return obj;
-  });
+  let out;
+  if (lastRow < 2) {
+    out = [];
+  } else {
+    const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+    const data = sh.getRange(2, 1, lastRow - 1, headers.length).getValues();
+    out = data.map(row => {
+      const obj = {};
+      headers.forEach((h, i) => { obj[h] = row[i]; });
+      return obj;
+    });
+  }
+  _sheetReadCache[cacheKey] = out;
+  return out;
+}
+
+/** Ryd cachen for én fane i nuværende band — kald efter enhver skrivning, så senere reads i SAMME request ikke ser forældede data. */
+function _invalidateReadCache(name) {
+  delete _sheetReadCache[CURRENT_BAND_ID + ':' + name];
 }
 
 // ─── Concurrency (atomare skrivninger) ───────────────────────────────────────
@@ -958,6 +1078,7 @@ function _writeRow(name, obj) {
     const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
     const row = headers.map(h => obj[h] === undefined ? '' : obj[h]);
     sh.appendRow(row);
+    _invalidateReadCache(name);
   });
 }
 
@@ -972,11 +1093,15 @@ function _updateRowById(name, id, patch) {
     for (let i = 0; i < ids.length; i++) {
       if (String(ids[i][0]) === String(id)) {
         const rowNum = i + 2;
+        // Læs hele rækken, flet patch ind, og skriv tilbage i ÉT setValues-kald i
+        // stedet for ét setValue pr. felt — kortere lås-hold-tid ved samtidige skrivninger.
+        const rowRange = sh.getRange(rowNum, 1, 1, headers.length);
+        const rowValues = rowRange.getValues()[0];
         headers.forEach((h, j) => {
-          if (patch[h] !== undefined) {
-            sh.getRange(rowNum, j + 1).setValue(patch[h]);
-          }
+          if (patch[h] !== undefined) rowValues[j] = patch[h];
         });
+        rowRange.setValues([rowValues]);
+        _invalidateReadCache(name);
         return true;
       }
     }
@@ -995,6 +1120,7 @@ function _deleteRowById(name, id) {
     for (let i = 0; i < ids.length; i++) {
       if (String(ids[i][0]) === String(id)) {
         sh.deleteRow(i + 2);
+        _invalidateReadCache(name);
         return true;
       }
     }
@@ -1105,7 +1231,30 @@ function actLogin(p) {
     ok: true,
     member: _privateMember(m),
     forcePasswordChange: !!m.forcePasswordChange,
-    role: m.role || 'member'
+    role: m.role || 'member',
+    // Klienten bruger dette token i stedet for password-hash på alle efterfølgende
+    // kald (Worker'en holder det server-side, det når aldrig browseren).
+    memberToken: _issueMemberToken(p.email, m)
+  };
+}
+
+/**
+ * Bruges af Worker'ens /api/session (fane genåbnet/genindlæst) til at bekræfte
+ * og forny medlems-tokenet. Kalder BEVIDST ikke actLogin: et udløbet mt:-token
+ * er en normal, harmløs hændelse (8t TTL nået, ikke et forkert-password-gæt) og
+ * må IKKE tælle med i login-lockout-tælleren — ellers kan et helt bands brugere,
+ * der genindlæser fanen samtidig efter 8 timers inaktivitet, låse deres egne
+ * konti ude ved at "fejle" flere gange i træk.
+ */
+function actRefreshSession(p) {
+  const m = _verifyAuth(p.email, p.passwordHash);
+  if (!m) return { ok: false, error: 'Session udløbet' };
+  return {
+    ok: true,
+    member: _privateMember(m),
+    forcePasswordChange: !!m.forcePasswordChange,
+    role: m.role || 'member',
+    memberToken: _issueMemberToken(p.email, m)
   };
 }
 
@@ -1117,14 +1266,21 @@ function actChangePassword(p) {
   _updateRowById('Members', m.id, { passwordHash: pf.passwordHash, pwSalt: pf.pwSalt, forcePasswordChange: false });
   // SSO: ét password gælder alle bands → opdatér det centrale identitets-kort.
   _syncIdentityPassword(m.email, pf);
-  return { ok: true };
+  // Fingeraftrykket i alle udestående medlems-tokens matcher nu det GAMLE password
+  // og bliver automatisk ugyldige — udsted et nyt til den session der lige skiftede.
+  const updated = Object.assign({}, m, { passwordHash: pf.passwordHash });
+  return { ok: true, memberToken: _issueMemberToken(m.email, updated) };
 }
 
 function actTrackLogin(p) {
+  // Kræver gyldig auth, så ingen kan skrive vilkårlige rækker i et andet bands
+  // LoginLog (som ellers ville lække ind i GDPR-eksporten for den ramte email).
+  const m = _verifyAuth(p.email, p.passwordHash);
+  if (!m) return { ok: false, error: 'Ikke logget ind' };
   _writeRow('LoginLog', {
     timestamp: new Date(),
-    memberId: p.memberId || '',
-    email: p.email || '',
+    memberId: m.id,
+    email: m.email,
     userAgent: (p.ua || '').toString().slice(0, 200)
   });
   return { ok: true };
@@ -1735,13 +1891,13 @@ function migrateDriveFoldersToPerBand() {
 }
 
 function _nextInvoiceNr(year) {
-  // Find første ledige nummer for året — slettede fakturaers numre genbruges,
-  // så sekvensen forbliver tæt (ingen huller).
+  // Find første ledige nummer for året. Slettede fakturaer er soft-deleted netop
+  // for at holde deres nummer reserveret (se actDeleteInvoice) — deres numre må
+  // IKKE genbruges, ellers får to fakturaer samme nummer i bogføringen.
   const all = _readAll('Invoices');
   const prefix = String(year) + '-';
   const used = {};
   all.forEach(r => {
-    if (String(r.status) === 'slettet') return;
     const nr = String(r.invoiceNr || '');
     if (nr.indexOf(prefix) === 0) {
       const n = parseInt(nr.slice(prefix.length), 10);
@@ -2246,6 +2402,31 @@ function actGetMyHonorar(p) {
  * logo (data-URL). Logoet caches pr. logoFileId; store logoer springes over
  * (frontend viser et farve-chip i stedet). Forudsætter CURRENT_BAND_ID == bandId.
  */
+/**
+ * Bandets fulde logo som data-URL, cachet 6 timer pr. Drive-fileId (CacheService,
+ * overlever på tværs af requests). Uden dette re-henter og re-base64'er
+ * actGetConfig logoet fra Drive på HVER ulogget boot-visning af login-skærmen.
+ * Ingen størrelsesbegrænsning (i modsætning til _bandBrandLite's "lite"-variant) —
+ * hvis logoet er for stort til CacheService, fejler cachingen stille og logoet
+ * hentes bare fra Drive igen næste gang; boot-flowet må aldrig fejle på grund af det.
+ */
+function _cachedLogoDataUrl(fileId) {
+  if (!fileId) return '';
+  const cache = CacheService.getScriptCache();
+  const ck = 'logoFull:' + fileId;
+  const cached = cache.get(ck);
+  if (cached !== null) return cached;
+  try {
+    const blob = DriveApp.getFileById(fileId).getBlob();
+    const url = 'data:' + blob.getContentType() + ';base64,' + Utilities.base64Encode(blob.getBytes());
+    try { cache.put(ck, url, 21600); } catch (e) { /* logo for stort til CacheService — cachingen springes bare over */ }
+    return url;
+  } catch (e) {
+    Logger.log('_cachedLogoDataUrl: logo kunne ikke hentes (fileId=' + fileId + '): ' + e);
+    return '';
+  }
+}
+
 function _bandBrandLite(bandId, tenantName) {
   const cfg = getBandConfig();
   const brand = {
@@ -2368,15 +2549,9 @@ function actGetConfig(p) {
   const pub = {};
   PUBLIC_CONFIG_KEYS.forEach(k => { pub[k] = cfg[k] || ''; });
   // Logo som data-URL (inline base64 — undgår at vi skal eksponere Drive-file public).
-  pub.logoDataUrl = '';
-  if (cfg.logoFileId) {
-    try {
-      const blob = DriveApp.getFileById(cfg.logoFileId).getBlob();
-      pub.logoDataUrl = 'data:' + blob.getContentType() + ';base64,' + Utilities.base64Encode(blob.getBytes());
-    } catch (e) {
-      Logger.log('Logo-fetch fejl (fileId=' + cfg.logoFileId + '): ' + e + ' — tjek at filen findes og at Apps Script har Drive-adgang.');
-    }
-  }
+  // Cachet 6 timer pr. fileId — ellers re-henter/re-base64'er vi Drive-filen på HVER
+  // ulogget boot-visning af login-skærmen (kaldes af enhver besøgende, hver gang).
+  pub.logoDataUrl = _cachedLogoDataUrl(cfg.logoFileId);
   pub.hasRider = !!cfg.riderFileId || !!String(cfg.riderText || '').trim();
   pub.hasRiderPdf = !!String(cfg.riderFileId || '').trim();  // PDF der erstatter de genererede rider-sider i kontrakten
   pub.hasSceneplan = !!String(cfg.sceneplanFileId || '').trim();
@@ -2760,17 +2935,21 @@ function _getBandSubFolder(name, lockdown) {
 /**
  * Opdaterer (eller tilføjer) key/value-rækker i nuværende bands Settings-fane.
  * Genbruges af onboarding og operatør-actions. Invaliderer config-cachen.
+ * allowedKeys (valgfri): whitelist af tilladte keys — ukendte keys i `changes`
+ * ignoreres stille i stedet for at blive skrevet ukontrolleret til Sheetet.
  */
-function _setSettings(changes) {
+function _setSettings(changes, allowedKeys) {
   const sh = _getSheet('Settings');
   const lastRow = sh.getLastRow();
   const rows = lastRow >= 2 ? sh.getRange(2, 1, lastRow - 1, 2).getValues() : [];
   const keyToRow = {};
   rows.forEach((r, i) => { keyToRow[r[0]] = i + 2; });
   Object.keys(changes).forEach(k => {
+    if (allowedKeys && allowedKeys.indexOf(k) === -1) return; // ignorér ukendte keys
     if (keyToRow[k]) sh.getRange(keyToRow[k], 2).setValue(changes[k]);
     else sh.appendRow([k, changes[k]]);
   });
+  _invalidateReadCache('Settings');
   _invalidateBandConfigCache();
 }
 
@@ -3154,21 +3333,7 @@ function actAdminWriteConfig(p) {
   _verifyAdminSignature(p);
   const changes = p.changes; // {key: value}
   if (!changes || typeof changes !== 'object') return { ok: false, error: 'changes mangler' };
-  const sh = _getSheet('Settings');
-  const lastRow = sh.getLastRow();
-  const rows = lastRow >= 2 ? sh.getRange(2, 1, lastRow - 1, 2).getValues() : [];
-  const keyToRow = {};
-  rows.forEach((r, i) => { keyToRow[r[0]] = i + 2; });
-  Object.keys(changes).forEach(k => {
-    if (!(k in SETTINGS_DEFAULTS)) return; // ignorér ukendte keys
-    const value = changes[k];
-    if (keyToRow[k]) {
-      sh.getRange(keyToRow[k], 2).setValue(value);
-    } else {
-      sh.appendRow([k, value]);
-    }
-  });
-  _invalidateBandConfigCache();
+  _setSettings(changes, Object.keys(SETTINGS_DEFAULTS));
   _audit(_operatorActor(p), 'config-aendret', CURRENT_BAND_ID, Object.keys(changes).filter(k => k in SETTINGS_DEFAULTS).join(', '));
   return { ok: true };
 }
@@ -3286,21 +3451,7 @@ function actAdminSaveBillingInfo(p) {
   ['bankName', 'bankReg', 'bankKto', 'payeeName', 'payeeAddress'].forEach(k => {
     if (p[k] !== undefined) changes[k] = String(p[k]).trim();
   });
-  if (Object.keys(changes).length > 0) {
-    const sh = _getSheet('Settings');
-    const lastRow = sh.getLastRow();
-    const rows = lastRow >= 2 ? sh.getRange(2, 1, lastRow - 1, 2).getValues() : [];
-    const keyToRow = {};
-    rows.forEach((r, i) => { keyToRow[r[0]] = i + 2; });
-    Object.keys(changes).forEach(k => {
-      if (keyToRow[k]) {
-        sh.getRange(keyToRow[k], 2).setValue(changes[k]);
-      } else {
-        sh.appendRow([k, changes[k]]);
-      }
-    });
-    _invalidateBandConfigCache();
-  }
+  if (Object.keys(changes).length > 0) _setSettings(changes);
 
   const hasCpr = !!props.getProperty(PROP_BAND_CPR_PREFIX + CURRENT_BAND_ID);
   return { ok: true, hasCpr: hasCpr };
@@ -3427,18 +3578,6 @@ function actAdminSaveAppearance(p) {
   });
   if (!Object.keys(changes).length) return { ok: false, error: 'Ingen ændringer sendt' };
 
-  const sh = _getSheet('Settings');
-  const lastRow = sh.getLastRow();
-  const rows = lastRow >= 2 ? sh.getRange(2, 1, lastRow - 1, 2).getValues() : [];
-  const keyToRow = {};
-  rows.forEach((r, i) => { keyToRow[r[0]] = i + 2; });
-  Object.keys(changes).forEach(k => {
-    if (keyToRow[k]) {
-      sh.getRange(keyToRow[k], 2).setValue(changes[k]);
-    } else {
-      sh.appendRow([k, changes[k]]);
-    }
-  });
-  _invalidateBandConfigCache();
+  _setSettings(changes);
   return { ok: true };
 }

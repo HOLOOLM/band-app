@@ -403,15 +403,15 @@ function drawInvoicesTable(invoices){
               ? '<span class="badge" style="color:var(--danger);border-color:rgba(220,90,90,.3)"><span class="badge-dot"></span>Forsinket</span>'
               : '<span class="badge warn"><span class="badge-dot"></span>Udestående</span>';
           const toggle = i.status === 'betalt'
-            ? `<button class="btn btn-ghost btn-sm" onclick="setInvoiceStatus('${escapeHtml(i.id)}','udestaaende')">↺ Genåbn</button>`
-            : `<button class="btn btn-primary btn-sm" onclick="setInvoiceStatus('${escapeHtml(i.id)}','betalt')">✓ Markér betalt</button>`;
+            ? `<button class="btn btn-ghost btn-sm" data-toggle-status="udestaaende">↺ Genåbn</button>`
+            : `<button class="btn btn-primary btn-sm" data-toggle-status="betalt">✓ Markér betalt</button>`;
           const contractLink = i.contractId
-            ? `<button class="btn btn-text" onclick="setAdminRoute('contractEdit',{id:'${escapeHtml(i.contractId)}'})" style="padding:0;font-size:13px;text-align:left">
+            ? `<button class="btn btn-text" data-open-contract style="padding:0;font-size:13px;text-align:left">
                  <span class="serif" style="color:var(--cream)">${escapeHtml(venue.name||'—')}</span>
                  <div class="mono" style="font-size:10px;color:var(--cream-mute);letter-spacing:.06em">#${escapeHtml(i.contractId)} ↗</div>
                </button>`
             : '<span class="muted">—</span>';
-          return `<tr>
+          return `<tr data-invoice-id="${escapeHtml(i.id)}" data-invoice-nr="${escapeHtml(i.invoiceNr)}" data-contract-id="${escapeHtml(i.contractId||'')}">
             <td class="mono" style="color:var(--accent)">${escapeHtml(i.invoiceNr)}</td>
             <td>${contractLink}</td>
             <td>${escapeHtml(arr.name||'—')}</td>
@@ -421,16 +421,29 @@ function drawInvoicesTable(invoices){
             <td style="text-align:right;white-space:nowrap">
               ${i.driveUrl
                 ? `<a href="${escapeHtml(i.driveUrl)}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm" style="text-decoration:none">↗ Drive</a>
-                   <button class="btn btn-ghost btn-sm" onclick="uploadInvoicePdf('${escapeHtml(i.id)}','${escapeHtml(i.invoiceNr)}')" title="Genopret Drive-arkiv uden CPR">↻ Genopret Drive</button>`
-                : `<button class="btn btn-primary btn-sm" onclick="uploadInvoicePdf('${escapeHtml(i.id)}','${escapeHtml(i.invoiceNr)}')" title="Arkiver til Drive uden CPR">☁ Arkivér til Drive</button>`}
+                   <button class="btn btn-ghost btn-sm" data-upload-invoice title="Genopret Drive-arkiv uden CPR">↻ Genopret Drive</button>`
+                : `<button class="btn btn-primary btn-sm" data-upload-invoice title="Arkiver til Drive uden CPR">☁ Arkivér til Drive</button>`}
               ${toggle}
-              <button class="btn btn-danger btn-sm" onclick="deleteInvoice('${escapeHtml(i.id)}','${escapeHtml(i.invoiceNr)}')" title="Slet honorarafregning">🗑</button>
+              <button class="btn btn-danger btn-sm" data-delete-invoice title="Slet honorarafregning">🗑</button>
             </td>
           </tr>`;
         }).join('')}
       </tbody>
     </table>
   `;
+  wrap.querySelectorAll('tr[data-invoice-id]').forEach(row=>{
+    const id = row.getAttribute('data-invoice-id');
+    const nr = row.getAttribute('data-invoice-nr');
+    const contractId = row.getAttribute('data-contract-id');
+    const toggleBtn = row.querySelector('[data-toggle-status]');
+    if (toggleBtn) toggleBtn.onclick = ()=> setInvoiceStatus(id, toggleBtn.getAttribute('data-toggle-status'));
+    const contractBtn = row.querySelector('[data-open-contract]');
+    if (contractBtn) contractBtn.onclick = ()=> setAdminRoute('contractEdit', { id: contractId });
+    const uploadBtn = row.querySelector('[data-upload-invoice]');
+    if (uploadBtn) uploadBtn.onclick = ()=> uploadInvoicePdf(id, nr);
+    const deleteBtn = row.querySelector('[data-delete-invoice]');
+    if (deleteBtn) deleteBtn.onclick = ()=> deleteInvoice(id, nr);
+  });
 }
 
 /**

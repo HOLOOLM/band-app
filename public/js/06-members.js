@@ -41,7 +41,7 @@ function drawMembersGrid(){
   if (ADMIN_STATE.memberFilter !== 'alle') rows = rows.filter(m=>m.category===ADMIN_STATE.memberFilter);
   if (!rows.length){ wrap.innerHTML = '<div class="empty">Ingen medlemmer.</div>'; return; }
   wrap.innerHTML = '<div class="member-grid">' + rows.map(m=>`
-    <div class="card member-card" onclick="openMemberDrawer('${escapeHtml(m.id)}')">
+    <div class="card member-card" data-member-id="${escapeHtml(m.id)}">
       <div class="avatar">${initials(m.name)}</div>
       <div class="info">
         <div class="role-line">${escapeHtml(m.category||'')} · ${escapeHtml(m.instrument||'')}</div>
@@ -50,6 +50,9 @@ function drawMembersGrid(){
         ${m.role==='admin'?'<div style="margin-top:8px"><span class="badge amber"><span class="badge-dot"></span>Admin</span></div>':''}
       </div>
     </div>`).join('') + '</div>';
+  wrap.querySelectorAll('[data-member-id]').forEach(card=>{
+    card.onclick = ()=> openMemberDrawer(card.getAttribute('data-member-id'));
+  });
 }
 
 function openMemberDrawer(id){
@@ -85,15 +88,21 @@ function openMemberDrawer(id){
       ${m ? `<div class="card" style="padding:14px;margin-top:6px">
         <div class="eyebrow" style="margin-bottom:6px">Adgangskode</div>
         <div class="muted" style="font-size:13px;margin-bottom:10px">Nulstiller til en midlertidig adgangskode — den vises efter nulstilling, og medlemmet tvinges til at vælge en ny ved næste login.</div>
-        <button class="btn btn-ghost btn-sm" onclick="resetMemberPw('${escapeHtml(m.id)}')">Nulstil adgangskode</button>
+        <button class="btn btn-ghost btn-sm" data-reset-pw>Nulstil adgangskode</button>
       </div>` : ''}
     </div>
     <div class="drawer-foot">
-      ${m && m.id !== SESSION.member.id ? `<button class="btn btn-danger btn-sm" onclick="deleteMember('${escapeHtml(m.id)}')">Slet</button>` : '<span></span>'}
-      <button class="btn btn-primary" onclick="saveMember(${m?`'${escapeHtml(m.id)}'`:'null'})">Gem</button>
+      ${m && m.id !== SESSION.member.id ? `<button class="btn btn-danger btn-sm" data-delete-member>Slet</button>` : '<span></span>'}
+      <button class="btn btn-primary" data-save-member>Gem</button>
     </div>
   `;
-  document.getElementById('drawer').classList.add('show');
+  const drawer = document.getElementById('drawer');
+  const resetBtn = drawer.querySelector('[data-reset-pw]');
+  if (resetBtn) resetBtn.onclick = ()=> resetMemberPw(m.id);
+  const deleteBtn = drawer.querySelector('[data-delete-member]');
+  if (deleteBtn) deleteBtn.onclick = ()=> deleteMember(m.id);
+  drawer.querySelector('[data-save-member]').onclick = ()=> saveMember(m ? m.id : null);
+  drawer.classList.add('show');
   document.getElementById('drawerBackdrop').classList.add('show');
 }
 

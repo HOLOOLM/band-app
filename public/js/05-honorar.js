@@ -499,6 +499,10 @@ function copyContract(){
   EDITING.id = '';
   EDITING.status = 'udkast';
   EDITING.date = '';
+  // Uden dette peger kopien stadig på kilde-kontraktens id ved gem (se saveContract),
+  // som kan omdøbe/overskrive originalen i stedet for at oprette en ny.
+  delete EDITING._originalId;
+  delete EDITING._loadedAt;
   toast('Kopi oprettet — gem for at gemme den.');
   drawContractEditor();
 }

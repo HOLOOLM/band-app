@@ -156,15 +156,15 @@ function drawContractsTable(){
       <thead><tr><th>Nr</th><th>Spillested</th><th>Arrangør</th><th>Dato</th><th>Type</th><th style="text-align:right">Honorar</th><th>Status</th><th></th></tr></thead>
       <tbody>
         ${rows.map(c=>`
-          <tr class="clickable" onclick="setAdminRoute('contractEdit',{id:'${escapeHtml(c.id)}'})">
+          <tr class="clickable" data-contract-id="${escapeHtml(c.id)}">
             <td class="mono muted">${escapeHtml(c.id)}</td>
             <td><span class="serif" style="font-size:16px">${escapeHtml((c.venue&&c.venue.name)||'—')}</span> <span class="muted">· ${escapeHtml((c.venue&&c.venue.city)||'')}</span></td>
             <td><span class="muted" style="font-size:13px">${escapeHtml((c.arrangoer&&c.arrangoer.name)||'—')}</span></td>
             <td class="mono" style="color:var(--accent)">${fmtDate(c.date)}</td>
             <td>${escapeHtml(c.type||'')}</td>
             <td style="text-align:right" class="mono">${fmtMoney(c.honorar)}</td>
-            <td onclick="event.stopPropagation()">
-              <select class="select" style="padding:4px 8px;font-size:12px;width:auto" onchange="quickChangeStatus('${escapeHtml(c.id)}',this.value)">
+            <td data-stop-row-click>
+              <select class="select status-select" data-contract-id="${escapeHtml(c.id)}" style="padding:4px 8px;font-size:12px;width:auto">
                 <option value="udkast"${c.status==='udkast'?' selected':''}>Udkast</option>
                 <option value="afventer"${c.status==='afventer'?' selected':''}>Afventer</option>
                 <option value="godkendt"${c.status==='godkendt'?' selected':''}>Godkendt</option>
@@ -174,6 +174,15 @@ function drawContractsTable(){
           </tr>`).join('')}
       </tbody>
     </table>`;
+  wrap.querySelectorAll('tr[data-contract-id]').forEach(row=>{
+    row.onclick = ()=> setAdminRoute('contractEdit', { id: row.getAttribute('data-contract-id') });
+  });
+  wrap.querySelectorAll('[data-stop-row-click]').forEach(cell=>{
+    cell.onclick = (e)=> e.stopPropagation();
+  });
+  wrap.querySelectorAll('select.status-select').forEach(sel=>{
+    sel.onchange = ()=> quickChangeStatus(sel.getAttribute('data-contract-id'), sel.value);
+  });
 }
 
 // ── Contract editor ────────────────────────────────────────────
@@ -323,6 +332,12 @@ const PAYMENT_TERMS_OPTIONS = [
   'Andet'
 ];
 
+let _previewDebounceTimer = null;
+function _drawPreviewDebounced(){
+  clearTimeout(_previewDebounceTimer);
+  _previewDebounceTimer = setTimeout(drawPreview, 150);
+}
+
 function drawForm(){
   const c = EDITING;
   if (c.paymentTerms && !PAYMENT_TERMS_OPTIONS.includes(c.paymentTerms)) {
@@ -436,7 +451,7 @@ function drawForm(){
       const path = el.getAttribute('data-bind');
       let v = el.type === 'number' ? Number(el.value) : el.value;
       setPath(EDITING, path, v);
-      drawPreview();
+      _drawPreviewDebounced(); // preview flettes bl.a. logo/sceneplan/rider-billeder — for tungt til hvert tastetryk
     });
     el.addEventListener('change', ()=>{
       // selects fire 'change' reliably; also handles paymentTerms re-render

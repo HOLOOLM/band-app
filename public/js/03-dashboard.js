@@ -79,13 +79,13 @@ function _paintDashboard(d){
             ${d.upcoming.map((c,idx) => {
               const attCount = (c.attendees||[]).length;
               return `
-              <tr class="clickable" onclick="setAdminRoute('contractEdit',{id:'${escapeHtml(c.id)}'})">
+              <tr class="clickable" data-contract-id="${escapeHtml(c.id)}">
                 <td class="mono" style="color:var(--accent)">${fmtDate(c.date)}</td>
                 <td><span class="serif" style="font-size:16px">${escapeHtml((c.venue&&c.venue.name)||'—')}</span> <span class="muted">· ${escapeHtml((c.venue&&c.venue.city)||'')}</span></td>
                 <td>${escapeHtml(c.type||'')}</td>
                 <td style="text-align:right" class="mono">${fmtMoney(c.honorar)}</td>
                 <td>${statusBadge(c.status)}</td>
-                <td onclick="event.stopPropagation();showAttendeesPopup(${idx})" style="cursor:pointer">
+                <td data-attendees-idx="${idx}" style="cursor:pointer">
                   <span title="Vis besætning" style="display:inline-flex;align-items:center;gap:6px;padding:4px 9px;border-radius:999px;border:1px solid var(--ink-line);background:rgba(8,17,31,.4);font-family:var(--font-mono);font-size:12px;color:var(--cream)">
                     👥 ${attCount}
                   </span>
@@ -93,14 +93,20 @@ function _paintDashboard(d){
               </tr>`}).join('')}
           </tbody>
         </table>`;
+      upcomingEl.querySelectorAll('tr[data-contract-id]').forEach(row=>{
+        row.onclick = ()=> setAdminRoute('contractEdit', { id: row.getAttribute('data-contract-id') });
+      });
+      upcomingEl.querySelectorAll('[data-attendees-idx]').forEach(cell=>{
+        cell.onclick = (e)=>{ e.stopPropagation(); showAttendeesPopup(Number(cell.getAttribute('data-attendees-idx'))); };
+      });
     }
     if (arrangoereEl) {
       const arr = d.arrangoere || [];
       if (!arr.length){
         arrangoereEl.innerHTML = '<div class="empty">Ingen arrangører endnu.</div>';
       } else {
-        arrangoereEl.innerHTML = arr.map(a => `
-          <div class="clickable" onclick="ADMIN_STATE.contractSearch='${escapeHtml(a.name)}';setAdminRoute('contracts')"
+        arrangoereEl.innerHTML = arr.map((a,idx) => `
+          <div class="clickable" data-arrangoer-idx="${idx}"
             style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--ink-line-soft);gap:10px">
             <div>
               <div style="font-size:14px;color:var(--cream)">${escapeHtml(a.name)}</div>
@@ -113,6 +119,12 @@ function _paintDashboard(d){
               <div class="mono" style="font-size:10px;color:var(--cream-mute)">${fmtMoney(a.honorar)}</div>
             </div>
           </div>`).join('');
+        arrangoereEl.querySelectorAll('[data-arrangoer-idx]').forEach(el=>{
+          el.onclick = ()=>{
+            ADMIN_STATE.contractSearch = arr[Number(el.getAttribute('data-arrangoer-idx'))].name;
+            setAdminRoute('contracts');
+          };
+        });
       }
     }
   } catch(e){ toast(e.message,'err'); }
@@ -131,7 +143,7 @@ function showAttendeesPopup(idx){
   `;
   if (!atts.length){
     body.innerHTML = `<div class="muted" style="text-align:center;padding:14px">Ingen besætning tilknyttet endnu.</div>
-      <div style="text-align:center"><button class="btn btn-ghost btn-sm" onclick="closeAttendeesPopup();setAdminRoute('contractEdit',{id:'${escapeHtml(c.id)}'})">Rediger kontrakt →</button></div>`;
+      <div style="text-align:center"><button class="btn btn-ghost btn-sm" data-edit-contract>Rediger kontrakt →</button></div>`;
   } else {
     body.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;padding:8px 12px;background:rgba(8,17,31,.4);border-radius:var(--radius);border:1px solid var(--ink-line)">
@@ -146,9 +158,12 @@ function showAttendeesPopup(idx){
             <div class="mono" style="font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--cream-mute)">${escapeHtml(m.category||'')}${m.instrument?' · '+escapeHtml(m.instrument):''}</div>
           </div>
         </div>`).join('')}
-      <div style="text-align:right;margin-top:14px"><button class="btn btn-ghost btn-sm" onclick="closeAttendeesPopup();setAdminRoute('contractEdit',{id:'${escapeHtml(c.id)}'})">Rediger →</button></div>
+      <div style="text-align:right;margin-top:14px"><button class="btn btn-ghost btn-sm" data-edit-contract>Rediger →</button></div>
     `;
   }
+  body.querySelectorAll('[data-edit-contract]').forEach(btn=>{
+    btn.onclick = ()=>{ closeAttendeesPopup(); setAdminRoute('contractEdit', { id: c.id }); };
+  });
   document.getElementById('attendeesPopup').style.display = 'flex';
 }
 
