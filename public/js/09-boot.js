@@ -15,6 +15,11 @@ document.querySelectorAll('.sidebar .nav-item[data-route], .mobile-nav .mn-item[
 document.querySelectorAll('#memberApp .mode-pill button').forEach(b=>{
   b.addEventListener('click', ()=> setMemberView(b.getAttribute('data-mview')));
 });
+// Delegeret, da rider-skabelon-kortet gen-injiceres via innerHTML flere steder i operatør-UI'et.
+document.addEventListener('click', e=>{
+  const btn = e.target.closest('[data-reset-rider-tpl]');
+  if (btn) opResetRiderTemplate(btn.getAttribute('data-reset-rider-tpl'));
+});
 
 // ─── Boot: hent band-config og anvend branding FØR vi prøver restore ───
 // ════════════════════════════════════════════════════════════════════
@@ -351,8 +356,9 @@ function opRenderRename(bandId){
       <div class="login-err" id="opRenameErr"></div>
       <div class="field" style="margin-bottom:16px"><label>Nyt bandnavn</label>
         <input id="opRenameName" class="input" value="${escapeHtml(t.name||'')}"></div>
-      <button id="opRenameBtn" class="btn btn-primary" onclick="opDoRename('${escapeHtml(bandId)}')">Gem nyt navn</button>
+      <button id="opRenameBtn" class="btn btn-primary">Gem nyt navn</button>
     </div>`);
+  document.getElementById('opRenameBtn').onclick = ()=> opDoRename(bandId);
   const inp = document.getElementById('opRenameName');
   inp.focus();
   inp.addEventListener('keydown', e => { if (e.key === 'Enter') opDoRename(bandId); });
@@ -537,11 +543,13 @@ async function opCreateBand(){
         <p style="color:var(--cream-mute);font-size:13px;margin:0 0 18px">Midlertidig adgangskode: <strong class="mono">${escapeHtml(d.seedPassword)}</strong> (tvinges skiftet ved første login)</p>
         <p style="font-size:12px;margin:0 0 18px;color:${d.emailSent?'#8FCE8F':'var(--cream-mute)'}">${d.emailSent ? '✓ Velkomst-email sendt til admin' : 'Ingen email sendt — del login-URL og kode manuelt'}</p>
         <div class="flex" style="gap:8px">
-          <button class="btn btn-primary" onclick="navigator.clipboard&&navigator.clipboard.writeText('${url.replace(/'/g,"\\'")}');toast('Login-URL kopieret')">Kopiér URL</button>
-          <button class="btn btn-ghost" onclick="opOpenEditor('${escapeHtml(bandId)}')">Tilpas udseende →</button>
+          <button id="opCopyUrlBtn" class="btn btn-primary">Kopiér URL</button>
+          <button id="opOpenEditorBtn" class="btn btn-ghost">Tilpas udseende →</button>
           <button class="btn btn-text" onclick="opLoadDashboard()">Til oversigt</button>
         </div>
       </div>`);
+    document.getElementById('opCopyUrlBtn').onclick = ()=>{ navigator.clipboard && navigator.clipboard.writeText(url); toast('Login-URL kopieret'); };
+    document.getElementById('opOpenEditorBtn').onclick = ()=> opOpenEditor(bandId);
   } catch(e){
     btn.disabled=false; btn.textContent='Opret band'; fail('Netværksfejl: ' + e.message);
   }
@@ -836,14 +844,15 @@ function opRiderTemplatesCard(){
         <textarea class="textarea" data-rtpl-intro="${escapeHtml(type)}" rows="5" style="width:100%;margin-bottom:10px">${escapeHtml(intro)}</textarea>
         <label style="display:block;font-size:12px;color:var(--cream-mute);margin-bottom:4px">Rider-punkter — ét pr. linje</label>
         <textarea class="textarea" data-rtpl-points="${escapeHtml(type)}" rows="10" style="width:100%">${escapeHtml(points.join('\n'))}</textarea>
-        <button class="btn btn-text btn-sm" style="margin-top:6px" onclick="opResetRiderTemplate('${escapeHtml(type)}')">↺ Nulstil til standard</button>
+        <button class="btn btn-text btn-sm" style="margin-top:6px" data-reset-rider-tpl="${escapeHtml(type)}">↺ Nulstil til standard</button>
         ${TYPES_WITH_SCENEPLAN.indexOf(type) !== -1 ? `
         <div style="margin-top:14px;padding-top:14px;border-top:1px solid rgba(245,237,224,.1)">
           <label style="display:block;font-size:12px;color:var(--cream-mute);margin-bottom:6px">Sceneplan (billede) — indlejres som side 4 på ${escapeHtml(type)}-kontrakter. Ignoreres hvis der er uploadet en rider-PDF ovenfor.</label>
           <div id="opSceneplanStatus" style="font-size:12px;color:var(--cream-mute);margin-bottom:8px">${OP_CFG.sceneplanFileId ? '✓ Sceneplan uploadet' : 'Ingen sceneplan uploadet endnu'}</div>
           <div class="flex" style="gap:8px;align-items:center;flex-wrap:wrap">
             <input id="opSceneplanFile" type="file" accept="image/*" style="font-size:13px;color:var(--cream-mute)">
-            <button class="btn btn-ghost btn-sm" onclick="opUploadAsset('sceneplan', this)">Upload sceneplan</button>
+            <button class="btn btn-ghost btn-sm" onclick="opUploadAsset('sceneplan', this)">Upload billede</button>
+            <button class="btn btn-ghost btn-sm" onclick="opOpenSceneplanEditor()">${OP_CFG.sceneplanJson ? '✏️ Redigér i editor' : '✏️ Tegn i editor'}</button>
             <button class="btn btn-text btn-sm" onclick="opRemoveSceneplan(this)">Fjern</button>
           </div>
         </div>` : ''}
@@ -930,8 +939,32 @@ async function opUploadAsset(kind, btn){
 
 async function opRemoveSceneplan(btn){
   await withBusy(btn, 'Fjerner…', async () => {
-    await opWrite({ sceneplanFileId: '' }, 'Sceneplan fjernet');
+    await opWrite({ sceneplanFileId: '', sceneplanJson: '' }, 'Sceneplan fjernet');
     const st = document.getElementById('opSceneplanStatus'); if (st) st.textContent = 'Ingen sceneplan uploadet endnu';
+  });
+}
+
+// Åbner sceneplan-editoren (public/js/10-sceneplan-editor.js) forudfyldt med bandets
+// tidligere gemte tegning (hvis nogen). "Gem & publicér" genbruger nøjagtig samme
+// upload+config-skrivning som den manuelle billed-upload ovenfor, så begge veje
+// (upload et billede / tegn det selv) lander i samme sceneplanFileId.
+function opOpenSceneplanEditor(){
+  let initialState = null;
+  if (OP_CFG.sceneplanJson){
+    try { initialState = JSON.parse(OP_CFG.sceneplanJson); } catch(e){ initialState = null; }
+  }
+  SceneplanEditor.open({
+    state: initialState,
+    bandName: OP_CFG.bandName,
+    onPublish: async ({ dataBase64, contentType, filename, stateJson }) => {
+      const up = await _apiCall('adminUploadAsset', {
+        bandId: OP_CFG._bandId, kind: 'sceneplan',
+        filename: filename, contentType: contentType, dataBase64: dataBase64
+      });
+      if (!up || !up.ok) throw new Error((up && up.error) || 'Upload fejlede');
+      await opWrite({ sceneplanFileId: up.fileId, sceneplanJson: stateJson }, 'Sceneplan gemt & publiceret til rider');
+      const st = document.getElementById('opSceneplanStatus'); if (st) st.textContent = '✓ Sceneplan uploadet';
+    }
   });
 }
 

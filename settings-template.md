@@ -22,6 +22,7 @@ To kolonner: `key` | `value`. Én række pr. nøgle. Læses af `getBandConfig()`
 | `riderText` | tekst (multi-linje) | "Backline: …" | (Legacy) fri rider-tekst. Ingen aktiv frontend-forbruger; `riderTemplates` styrer den genererede rider |
 | `riderTemplates` | JSON | `{"Spillested":{"intro":"…","points":["…"]}}` | Rider-skabeloner pr. kontrakttype (intro + punkter) der genereres ind i kontrakt-PDF'en. Tom = indbyggede defaults i frontend. Redigeres i operatør-UI'et. Pladsholdere som `__BAND_NAME__` understøttes |
 | `sceneplanFileId` | Drive ID | "1abc…" | Drive file ID til sceneplan-billede (PNG/JPG). Indlejres som side 4 KUN på Festival-kontrakter. Hentes af indloggede brugere via `actGetSceneplan` |
+| `sceneplanJson` | JSON | `{"stage":{"w":8,"h":6},...}` | Redigerbar tilstand fra sceneplan-editoren (operatør-værktøjet) — bruges KUN til at genåbne/redigere en tidligere bygget sceneplan. Aldrig sendt til arrangører; det er PNG'en i `sceneplanFileId` der reelt indlejres i kontrakten |
 | `contactName` | tekst | "Jesper Steensbeck" | Manager/booking |
 | `contactEmail` | tekst | "jesper@steensbeck.dk" | Vises i kontrakt-footer |
 | `contactPhone` | tekst | "60 24 60 60" | Vises i rider-intro + kontrakt |
@@ -44,5 +45,5 @@ bgColor, textColor, fontUi, fontDisplay, contactName, contactEmail,
 contactPhone, contactAddress, techContactName, techContactPhone,
 riderTemplates` + `logoDataUrl` (logo som data-URL) + `hasRider` (boolean) + `hasSceneplan` (boolean).
 
-`seedPassword`, `invoiceFolderName`, `riderText` og `logoFileId`/`riderFileId`/`sceneplanFileId` returneres ALDRIG offentligt.
+`seedPassword`, `invoiceFolderName`, `riderText` og `logoFileId`/`riderFileId`/`sceneplanFileId`/`sceneplanJson` returneres ALDRIG offentligt.
 (`riderText` hentes af indloggede medlemmer via `actGetRider`; sceneplan-billedet via `actGetSceneplan`.)

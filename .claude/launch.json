@@ -6,6 +6,12 @@
       "runtimeExecutable": "npx",
       "runtimeArgs": ["wrangler", "dev", "--config", "worker/wrangler.toml", "--port", "8787"],
       "port": 8787
+    },
+    {
+      "name": "rider-demo",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["--yes", "http-server", ".", "-p", "8734", "-c-1"],
+      "port": 8734
     }
   ]
 }

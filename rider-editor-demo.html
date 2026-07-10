@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="da">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sceneplan-editor — test-harness</title>
+<style>
+  html,body{margin:0;padding:0;background:#08111F;height:100%}
+  #boot{color:#F5EDE0;font-family:Inter,sans-serif;padding:40px;text-align:center}
+</style>
+</head>
+<body>
+<div id="boot">Åbner sceneplan-editor…</div>
+
+<!--
+  Test-harness for public/js/10-sceneplan-editor.js — det SAMME modul der bruges
+  i den rigtige app (operatør-panelet). Gemmer lokalt i localStorage i stedet for
+  at kalde Apps Script, så editoren kan udvikles/testes uden at røre live data.
+  Kør via .claude launch-config "rider-demo" (http-server på repo-roden).
+-->
+<script src="public/js/10-sceneplan-editor.js"></script>
+<script>
+'use strict';
+const LS_KEY = 'sceneplanEditorHarness.v1';
+
+function loadSavedState(){
+  try { return JSON.parse(localStorage.getItem(LS_KEY)); } catch(e){ return null; }
+}
+
+function launch(){
+  SceneplanEditor.open({
+    state: loadSavedState(),
+    bandName: 'Test-harness',
+    onPublish: async ({ dataBase64, contentType, filename, stateJson }) => {
+      // I den rigtige app: adminUploadAsset (kind:'sceneplan') + opWrite({sceneplanFileId, sceneplanJson}).
+      // Her: gem JSON lokalt og vis PNG'en i en ny fane, så man kan se resultatet.
+      localStorage.setItem(LS_KEY, stateJson);
+      const byteChars = atob(dataBase64);
+      const bytes = new Uint8Array(byteChars.length);
+      for (let i=0;i<byteChars.length;i++) bytes[i] = byteChars.charCodeAt(i);
+      const blob = new Blob([bytes], {type: contentType});
+      window.open(URL.createObjectURL(blob), '_blank');
+      alert('Publiceret (simuleret)! PNG åbnet i ny fane, JSON gemt i localStorage.\nFil: ' + filename);
+    },
+    onClose: () => {
+      document.getElementById('boot').textContent = 'Editor lukket. Genindlæs siden for at åbne igen.';
+    }
+  });
+}
+launch();
+</script>
+</body>
+</html>
