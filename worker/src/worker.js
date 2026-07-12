@@ -9,6 +9,7 @@ export default {
     try {
       if (url.pathname === '/api/login')           return withSecHeaders(await apiLogin(request, env));
       if (url.pathname === '/api/operator-login')  return withSecHeaders(await apiOperatorLogin(request, env));
+      if (url.pathname === '/api/booker-login')    return withSecHeaders(await apiBookerLogin(request, env));
       if (url.pathname === '/api/session')         return withSecHeaders(await apiSession(request, env));
       if (url.pathname === '/api/logout')          return withSecHeaders(await apiLogout(request, env));
       if (url.pathname === '/api/change-password') return withSecHeaders(await apiChangePassword(request, env));
@@ -137,12 +138,34 @@ async function apiOperatorLogin(request, env) {
   return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie(sid) });
 }
 
+// Booker-login (Booking Fase B) — klon af apiOperatorLogin. bt:-tokenet bliver
+// server-side i KV ligesom operatør-/medlems-credentials; browseren får kun
+// den httpOnly sid-cookie.
+async function apiBookerLogin(request, env) {
+  const body = await request.json();
+  const email = String(body.email || '').toLowerCase().trim();
+  const passwordHash = String(body.passwordHash || '');
+  if (await ipRateLimited(request, env)) return json({ ok: false, error: 'For mange forsøg — prøv igen senere' }, 429);
+  const d = await callAppsScript(env, { action: 'bookerLogin', email, passwordHash });
+  if (!d || !d.ok) { await ipRateLimitPenalize(request, env); return json(d || { ok: false, error: 'Login mislykkedes' }); }
+
+  const sid = crypto.randomUUID();
+  const bookerToken = d.token;
+  delete d.token; // må aldrig nå browseren
+  await saveSession(env, sid, { kind: 'booker', bookerToken });
+  return json(d, 200, { 'Set-Cookie': sessionCookie(sid) });
+}
+
 // ─── Session-tjek (boot/restore) ───────────────────────────────────────────────
 
 async function apiSession(request, env) {
   const sess = await loadSession(request, env);
   if (!sess) return json({ ok: false });
   if (sess.data.kind === 'operator') return json({ ok: true, role: 'operator' });
+  // Booker-tokenet er selv 8t-holdbart (BOOKER_TOKEN_TTL_SEC) og har intet
+  // "refresh"-endpoint i v1 — findes tokenet stadig i KV, er sessionen gyldig;
+  // Apps Script-siden verificerer selv udløb/password-fingeraftryk ved hver kaldt action.
+  if (sess.data.kind === 'booker') return json({ ok: true, role: 'booker' });
   // 'refreshSession' i stedet for 'login': et udløbet medlems-token (normalt efter
   // 8t, fx en fane der genindlæses) må ikke tælle som et forkert login-forsøg —
   // ellers kan flere samtidige fane-genindlæsninger udløse konto-lockout.
@@ -188,7 +211,7 @@ async function apiCall(request, env) {
   try { body = await request.json(); } catch (e) { return json({ ok: false, error: 'Ugyldig request' }, 400); }
   const action = String(body.action || '');
   // Disse har dedikerede routes (sætter/opdaterer cookie/session) — ikke tilladt her.
-  if (action === 'login' || action === 'refreshSession' || action === 'operatorLogin' || action === 'changePassword') {
+  if (action === 'login' || action === 'refreshSession' || action === 'operatorLogin' || action === 'bookerLogin' || action === 'changePassword') {
     return json({ ok: false, error: 'Forbudt' }, 403);
   }
 
@@ -208,8 +231,8 @@ async function apiCall(request, env) {
   // appOrigin bruges af booking-actions (fx approveAndSignBooking) til signatur-
   // registrering og til at bygge signeringslinket, uden at Apps Script behøver
   // kende Worker'ens domæne. Sat EFTER spread af body, så en klient ikke kan forfalske dem.
-  const inject = sess.data.kind === 'operator'
-    ? { operatorToken: sess.data.operatorToken }
+  const inject = sess.data.kind === 'operator' ? { operatorToken: sess.data.operatorToken }
+    : sess.data.kind === 'booker' ? { bookerToken: sess.data.bookerToken }
     : { email: sess.data.email, passwordHash: sess.data.passwordHash };
   inject.clientIp = request.headers.get('CF-Connecting-IP') || '';
   inject.userAgent = (request.headers.get('User-Agent') || '').slice(0, 200);

@@ -103,6 +103,13 @@ const BAND_ID = new URLSearchParams(location.search).get('band') || '';
 const OPERATOR_MODE = (BAND_ID === '__operator');
 let OPERATOR_TOKEN = null;
 
+// Booker-mode: ?band=__booker åbner booking-agent-portalen (Fase B/C). Samme
+// mønster som OPERATOR_MODE — bt:-tokenet lever server-side i Worker'ens KV,
+// bundet til den httpOnly session-cookie; BOOKER_SESSION her er kun en
+// klient-side sentinel/profil-cache, aldrig selve credentiallet.
+const BOOKER_MODE = (BAND_ID === '__booker');
+let BOOKER_SESSION = null;
+
 // State
 let SESSION = null; // { email, hash, role, member }
 let CACHE = { members: null, contracts: null, dashboard: null, invoices: null, bookings: null, _stamp: {} };

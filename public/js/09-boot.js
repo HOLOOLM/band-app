@@ -166,6 +166,7 @@ function opRenderDashboard(){
       <div class="flex" style="justify-content:space-between;align-items:center;margin-bottom:12px">
         <h2 class="serif" style="margin:0;font-size:18px">Dine bands (${OP_TENANTS.length})</h2>
         <div class="flex" style="gap:8px">
+          <button class="btn btn-ghost btn-sm" onclick="opOpenBookers()">Bookere</button>
           <button class="btn btn-ghost btn-sm" onclick="opOpenAudit()">Audit-log</button>
           <button class="btn btn-ghost btn-sm" onclick="opRunRetention()">Kør log-oprydning</button>
           <button class="btn btn-primary btn-sm" onclick="opRenderNewBand()">+ Nyt band</button>
@@ -489,6 +490,164 @@ function opExportAuditCsv(){
   a.download = 'audit-log.csv';
   document.body.appendChild(a); a.click();
   setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 0);
+}
+
+// ─── Operatør: booker-administration (Booking Fase B) ───────────────────────
+// En booker er en ekstern booking-agent med eget login (?band=__booker).
+// Operatøren opretter kontoen, tildeler adgang til bands via checkbokse (samme
+// mønster som crossBand/booking-toggles), og er den ENESTE vej til at sætte/
+// nulstille bookerens password i v1 — der findes ingen selvbetjenings-vej.
+
+let OP_BOOKERS = [];
+
+async function opOpenBookers(){
+  opResetChrome();
+  opRoot().innerHTML = opShell('<div class="card"><span class="spinner"></span>Henter bookere…</div>');
+  try {
+    const [bookersRes, tenantsRes] = await Promise.all([
+      _apiCall('operatorListBookers', {}),
+      OP_TENANTS.length ? Promise.resolve({ ok: true, tenants: OP_TENANTS }) : _apiCall('listTenants', {})
+    ]);
+    if (!bookersRes || !bookersRes.ok){
+      if (bookersRes && /token/i.test(bookersRes.error||'')){ opLogout(); return; }
+      opRoot().innerHTML = opShell(`<div class="card"><button class="btn btn-text btn-sm" onclick="opLoadDashboard()" style="margin-bottom:8px">← Tilbage</button><p style="color:var(--danger)">${escapeHtml((bookersRes&&bookersRes.error)||'Kunne ikke hente bookere')}</p></div>`);
+      return;
+    }
+    if (tenantsRes && tenantsRes.ok) OP_TENANTS = tenantsRes.tenants || OP_TENANTS;
+    OP_BOOKERS = bookersRes.bookers || [];
+    opRenderBookers();
+  } catch(e){
+    opRoot().innerHTML = opShell(`<div class="card"><p style="color:var(--danger)">Netværksfejl: ${escapeHtml(e.message)}</p></div>`);
+  }
+}
+
+function opRenderBookers(){
+  opRoot().innerHTML = opShell(`
+    <button class="btn btn-text btn-sm" onclick="opLoadDashboard()" style="margin-bottom:8px">← Alle bands</button>
+    <div class="flex" style="justify-content:space-between;align-items:center;margin-bottom:14px">
+      <h2 class="serif" style="margin:0;font-size:18px">Bookere (${OP_BOOKERS.length})</h2>
+      <button class="btn btn-primary btn-sm" onclick="opRenderBookerForm()">+ Ny booker</button>
+    </div>
+    <div id="opBookerList">${opBookerListHtml()}</div>`);
+}
+
+function opBookerListHtml(){
+  if (!OP_BOOKERS.length) return '<p style="color:var(--cream-mute)">Ingen bookere endnu.</p>';
+  return OP_BOOKERS.map(b => {
+    const suspended = b.status === 'suspended';
+    const bandNames = (b.bandIds||[]).map(id => { const t = OP_TENANTS.find(x=>x.bandId===id); return t ? (t.name||t.bandId) : id; });
+    return `
+    <div class="card" style="margin-bottom:10px;padding:14px 16px">
+      <div class="flex" style="justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+        <div style="min-width:0;flex:1">
+          <div class="flex" style="align-items:center;gap:8px;flex-wrap:wrap">
+            <strong style="font-size:15px">${escapeHtml(b.name || b.email)}</strong>
+            ${b.agency ? `<span style="color:var(--cream-mute);font-size:12px">${escapeHtml(b.agency)}</span>` : ''}
+            ${suspended ? opChip('Suspenderet', 'miss') : opChip('Aktiv', 'ok')}
+          </div>
+          <div style="font-size:12px;color:var(--cream-mute);margin-top:4px">${escapeHtml(b.email)}</div>
+          <div style="font-size:12px;color:var(--cream-mute);margin-top:6px">${bandNames.length ? 'Adgang: ' + bandNames.map(escapeHtml).join(', ') : 'Ingen bands tildelt endnu'}</div>
+        </div>
+        <div class="flex" style="gap:6px;flex-wrap:wrap;justify-content:flex-end">
+          <button class="btn btn-ghost btn-sm" onclick="opRenderBookerForm('${escapeHtml(b.email)}')">Rediger</button>
+          <button class="btn btn-text btn-sm" onclick="opResetBookerPw('${escapeHtml(b.email)}')">Nulstil kode</button>
+          <button class="btn btn-text btn-sm" onclick="opDeleteBooker('${escapeHtml(b.email)}')">Slet</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function opRenderBookerForm(email){
+  const existing = email ? OP_BOOKERS.find(b => b.email === email) : null;
+  const isNew = !existing;
+  opRoot().innerHTML = opShell(`
+    <button class="btn btn-text btn-sm" onclick="opOpenBookers()" style="margin-bottom:8px">← Bookere</button>
+    <div class="card" style="max-width:620px">
+      <h2 class="serif" style="margin:0 0 4px;font-size:18px">${isNew ? 'Ny booker' : 'Rediger booker'}</h2>
+      <p style="color:var(--cream-mute);font-size:12px;margin:0 0 16px">${isNew ? 'Der genereres en midlertidig adgangskode, som vises én gang herefter — send den til bookeren ad sikker vej.' : 'Bandadgang og status kan ændres. E-mail kan ikke ændres.'}</p>
+      <div class="login-err" id="opBookerErr"></div>
+      <div class="field" style="margin-bottom:14px"><label>E-mail</label>
+        <input id="opBkEmail" class="input" type="email" ${isNew?'':'disabled'} value="${escapeHtml((existing&&existing.email)||'')}" placeholder="booker@agency.dk"></div>
+      <div class="field" style="margin-bottom:14px"><label>Navn</label>
+        <input id="opBkName" class="input" value="${escapeHtml((existing&&existing.name)||'')}" placeholder="Fx Anna Booking"></div>
+      <div class="field" style="margin-bottom:14px"><label>Agency</label>
+        <input id="opBkAgency" class="input" value="${escapeHtml((existing&&existing.agency)||'')}" placeholder="Fx Nordic Booking ApS"></div>
+      ${!isNew ? `
+      <div class="field" style="margin-bottom:14px"><label>Status</label>
+        <select id="opBkStatus" class="select">
+          <option value="active" ${existing.status!=='suspended'?'selected':''}>Aktiv</option>
+          <option value="suspended" ${existing.status==='suspended'?'selected':''}>Suspenderet</option>
+        </select></div>` : ''}
+      <div class="field" style="margin-bottom:18px"><label>Adgang til bands</label>
+        <div style="max-height:220px;overflow-y:auto;border:1px solid var(--ink-line-soft);border-radius:var(--radius);padding:8px">
+          ${OP_TENANTS.length ? OP_TENANTS.map(t => `
+            <label class="flex" style="gap:8px;align-items:center;padding:4px 2px;cursor:pointer;font-size:13px">
+              <input type="checkbox" class="opBkBand" value="${escapeHtml(t.bandId)}" style="width:auto;flex:none" ${(existing&&existing.bandIds||[]).indexOf(t.bandId)!==-1?'checked':''}>
+              ${escapeHtml(t.name||t.bandId)} ${!t.booking ? '<span style="color:var(--cream-mute);font-size:11px">(booking er slået fra)</span>' : ''}
+            </label>`).join('') : '<span style="color:var(--cream-mute);font-size:12px">Ingen bands oprettet endnu</span>'}
+        </div>
+        <span style="font-size:11px;color:var(--cream-mute)">Kun bands med booking slået til kan reelt bruges, selvom du tildeler adgang her.</span></div>
+      <button id="opBkSaveBtn" class="btn btn-primary btn-lg" style="width:100%;justify-content:center">${isNew ? 'Opret booker' : 'Gem ændringer'}</button>
+    </div>`);
+  document.getElementById('opBkSaveBtn').onclick = () => opSaveBooker(isNew, existing);
+}
+
+async function opSaveBooker(isNew, existing){
+  const email = document.getElementById('opBkEmail').value.trim().toLowerCase();
+  const name = document.getElementById('opBkName').value.trim();
+  const agency = document.getElementById('opBkAgency').value.trim();
+  const statusEl = document.getElementById('opBkStatus');
+  const bandIds = Array.from(document.querySelectorAll('.opBkBand:checked')).map(el => el.value);
+  const err = document.getElementById('opBookerErr');
+  const fail = m => { err.textContent = m; err.classList.add('show'); };
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){ fail('Udfyld en gyldig e-mail'); return; }
+  const btn = document.getElementById('opBkSaveBtn');
+  btn.disabled = true; btn.textContent = 'Gemmer…';
+  try {
+    const payload = { email: email, name: name, agency: agency, bandIds: bandIds };
+    if (statusEl) payload.status = statusEl.value;
+    const d = await _apiCall('operatorSaveBooker', payload);
+    if (!d || !d.ok){ btn.disabled=false; btn.textContent = isNew?'Opret booker':'Gem ændringer'; fail((d&&d.error)||'Kunne ikke gemme'); return; }
+    if (d.tempPassword){
+      opRoot().innerHTML = opShell(`
+        <div class="card" style="max-width:520px">
+          <div class="eyebrow warm">OPRETTET ✓</div>
+          <h2 class="serif" style="margin:2px 0 16px;font-size:20px">${escapeHtml(name||email)}</h2>
+          <p style="color:var(--cream-mute);font-size:13px;margin:0 0 6px">Login: <strong>${escapeHtml(email)}</strong></p>
+          <p style="color:var(--cream-mute);font-size:13px;margin:0 0 6px">Login-side: <span class="mono">${escapeHtml(location.origin + location.pathname + '?band=__booker')}</span></p>
+          <p style="color:var(--cream-mute);font-size:13px;margin:0 0 18px">Midlertidig adgangskode: <strong class="mono">${escapeHtml(d.tempPassword)}</strong> — send den sikkert til bookeren, den vises ikke igen.</p>
+          <button class="btn btn-primary" onclick="opOpenBookers()">Til bookere</button>
+        </div>`);
+      return;
+    }
+    toast('Booker gemt');
+    opOpenBookers();
+  } catch(e){ btn.disabled=false; btn.textContent = isNew?'Opret booker':'Gem ændringer'; fail('Netværksfejl: '+e.message); }
+}
+
+async function opResetBookerPw(email){
+  if (!confirm('Nulstil adgangskode for "' + email + '"?\n\nEn ny midlertidig kode genereres, og den nuværende session (og alle udestående) udløber med det samme.')) return;
+  try {
+    const d = await _apiCall('operatorResetBookerPassword', { email: email });
+    if (d && d.ok){
+      opRoot().innerHTML = opShell(`
+        <div class="card" style="max-width:480px">
+          <h2 class="serif" style="margin:0 0 12px;font-size:18px">Kode nulstillet</h2>
+          <p style="color:var(--cream-mute);font-size:13px;margin:0 0 18px">Ny midlertidig adgangskode for <strong>${escapeHtml(email)}</strong>: <strong class="mono">${escapeHtml(d.tempPassword)}</strong> — send den sikkert, den vises ikke igen.</p>
+          <button class="btn btn-primary" onclick="opOpenBookers()">Til bookere</button>
+        </div>`);
+    } else toast((d&&d.error)||'Kunne ikke nulstille', 'err');
+  } catch(e){ toast('Netværksfejl: '+e.message, 'err'); }
+}
+
+async function opDeleteBooker(email){
+  if (!confirm('Slet booker "' + email + '" permanent?\n\nBookerens login stopper med at virke med det samme. Allerede sendte/underskrevne tilbud i bandenes egne Sheets berøres ikke.')) return;
+  try {
+    const d = await _apiCall('operatorDeleteBooker', { email: email });
+    if (d && d.ok){ toast('Booker slettet'); opOpenBookers(); }
+    else toast((d&&d.error)||'Kunne ikke slette', 'err');
+  } catch(e){ toast('Netværksfejl: '+e.message, 'err'); }
 }
 
 function opRenderNewBand(){
@@ -1048,6 +1207,9 @@ function _showBootError(title, msg) {
 if (OPERATOR_MODE){
   // Samlet admin-/operatør-UI — springer band-validering over.
   opStart();
+} else if (BOOKER_MODE){
+  // Booker-portal (Fase B/C) — springer band-validering over, ligesom operatør.
+  bkStart();
 } else {
   if (!BAND_ID || !/^[a-z0-9-]+$/.test(BAND_ID)){
     _showBootError('Mangler band-id i URL', '<p>Tilføj <code>?band=&lt;bandId&gt;</code> til URL\'en for at åbne den korrekte band-app.</p><p style="color:#9A9285;font-size:13px">Eksempel: <code>' + location.origin + location.pathname + '?band=mit-band</code></p><p style="color:#9A9285;font-size:13px">Kontakt din administrator hvis du ikke kender bandets id.</p>');

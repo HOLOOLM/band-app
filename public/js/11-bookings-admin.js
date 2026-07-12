@@ -54,7 +54,7 @@ function drawBookingsTable(){
           const c = b.contractDraft || {};
           const venue = c.venue || {};
           return `<tr class="clickable" data-idx="${idx}">
-            <td><span class="serif" style="font-size:16px">${escapeHtml(venue.name || '—')}</span> <span class="muted">· ${escapeHtml(venue.city || '')}</span></td>
+            <td><span class="serif" style="font-size:16px">${escapeHtml(venue.name || '—')}</span> <span class="muted">· ${escapeHtml(venue.city || '')}</span>${b.source === 'booker' ? ' <span class="badge mute" style="font-size:10px">Booker</span>' : ''}</td>
             <td class="muted" style="font-size:13px">${escapeHtml(b.arrangoerName || '')}</td>
             <td class="mono" style="color:var(--accent)">${fmtDate(c.date)}</td>
             <td>${_bookingStatusBadge(b.status)}</td>
@@ -101,6 +101,13 @@ function openBookingReview(idx){
     <div style="padding:8px 0;border-bottom:1px solid var(--ink-line-soft);font-size:12px">
       <span class="mono muted" style="font-size:10px">${escapeHtml(fmtDate(h.ts))}</span> — ${escapeHtml(h.actor || '')}${h.note ? ': ' + escapeHtml(h.note) : ''}
     </div>`).join('');
+  // Booker-oprettede tilbud har ingen agency-navn på selve rækken (kun det
+  // ikke-reversible bookerId-hash) — den første historik-linje ("Kladde oprettet
+  // af booker (<agency>)") er den brugervendte kilde til hvem der sendte det.
+  const firstHist = (b.history || [])[0];
+  const sourceLine = b.source === 'booker'
+    ? `<div class="muted" style="font-size:12px;margin-top:6px">Modtaget fra booker${firstHist && firstHist.actor ? ' · ' + escapeHtml(firstHist.actor) : ''}</div>`
+    : '';
 
   drawer.innerHTML = `
     <div class="drawer-head">
@@ -109,6 +116,7 @@ function openBookingReview(idx){
     </div>
     <div class="drawer-body">
       ${_bookingStatusBadge(b.status)}
+      ${sourceLine}
       <div class="kv-grid" style="margin-top:6px">
         <div class="kv"><div class="label">Arrangør</div><div class="value" style="font-size:15px">${escapeHtml(arr.name || b.arrangoerName || '—')}</div></div>
         <div class="kv"><div class="label">Dato</div><div class="value" style="font-size:15px">${fmtDate(c.date)}</div></div>

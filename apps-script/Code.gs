@@ -116,6 +116,7 @@ const PROP_APP_FOLDER_ID = 'APP_FOLDER_ID';             // Drive-mappe der samle
 const PROP_AUDIT_SHEET_ID = 'AUDIT_SHEET_ID';           // Sheet med operatør-audit-log (oprettes første gang)
 const PROP_FEED_TOKEN_PREFIX = 'FEED_TOKEN_';           // FEED_TOKEN_<bandId> — hemmelig token til iCal-kalenderfeed
 const PROP_IDENTITY_PREFIX = 'IDENTITY_';               // IDENTITY_<sha256(email)> — central SSO-identitet på tværs af bands
+const PROP_BOOKER_PREFIX = 'BOOKER_';                   // BOOKER_<sha256(email)> — ekstern booking-agent-konto (Fase B), master-niveau ligesom tenant/identitet
 const PROP_APP_TOKEN = 'APP_SHARED_TOKEN';              // delt hemmelighed der valideres på alle doPost-kald (jf. _verifyAppToken)
 
 const OPERATOR_TOKEN_TTL_SEC = 8 * 60 * 60;             // operatør-session gyldig i 8 timer
@@ -528,7 +529,13 @@ function _appTokenOk(params) {
 }
 
 // Master-level actions kører UDEN bandId — de styrer tenant-registreringen selv.
-const MASTER_ACTIONS = { listTenants: 1, registerTenant: 1, deleteTenant: 1, updateTenant: 1, operatorLogin: 1, setTenantStatus: 1, getAuditLog: 1, runRetentionNow: 1 };
+// bookerLogin + operatør-booker-administration hører også hjemme her: ingen af
+// dem er scoped til ét enkelt band (bookerLogin har intet band endnu, og
+// operatoren administrerer bookere på tværs af bands fra master-niveau).
+const MASTER_ACTIONS = {
+  listTenants: 1, registerTenant: 1, deleteTenant: 1, updateTenant: 1, operatorLogin: 1, setTenantStatus: 1, getAuditLog: 1, runRetentionNow: 1,
+  bookerLogin: 1, operatorListBookers: 1, operatorSaveBooker: 1, operatorDeleteBooker: 1, operatorResetBookerPassword: 1
+};
 
 // Tværgående (cross-band) actions: kører UDEN ét enkelt bandId. Authentikeres mod
 // det centrale identitets-kort (SSO) og sætter selv CURRENT_BAND_ID pr. band.
@@ -540,6 +547,15 @@ const IDENTITY_ACTIONS = { getAllJobs: 1, getAllHonorar: 1 };
 // ACTIONS selv sætter CURRENT_BAND_ID. Ukendt/udløbet/manipuleret token → generisk
 // dansk fejl, aldrig et løft af hvorfor (ingen oracle for "findes denne booking").
 const PUBLIC_TOKEN_ACTIONS = { getSignableBooking: 1, submitArrangoerSignature: 1, declineByArrangoer: 1 };
+
+// Booker-tilbudsflow (Booking Fase C): booker-token-valideret (p.bookerToken),
+// IKKE bandId-gatet af den generiske "!p.bandId"-tjek nedenfor — bandId er enten
+// eksplicit i p (bookerGetBands/bookerSaveOffer ved oprettelse) eller udledes af
+// den fundne booking-række (bookerSendOffer/bookerCancelOffer/opdatering af
+// eksisterende kladde), og adgangen håndhæves af _bookerHasBandAccess/
+// _findBookerBooking — et bt:-token kan ALDRIG kalde medlems-/admin-/
+// operatør-actions, håndhævet ved at disse actions er hinandens eneste vej ind.
+const BOOKER_ACTIONS = { bookerGetBands: 1, bookerListOffers: 1, bookerSaveOffer: 1, bookerSendOffer: 1, bookerCancelOffer: 1 };
 
 function handle(p) {
   const action = p.action;
@@ -556,6 +572,11 @@ function handle(p) {
         case 'setTenantStatus': result = actSetTenantStatus(p); break;
         case 'getAuditLog':    result = actGetAuditLog(p); break;
         case 'runRetentionNow': result = actRunRetentionNow(p); break;
+        case 'bookerLogin':    result = actBookerLogin(p); break;
+        case 'operatorListBookers':        result = actOperatorListBookers(p); break;
+        case 'operatorSaveBooker':         result = actOperatorSaveBooker(p); break;
+        case 'operatorDeleteBooker':       result = actOperatorDeleteBooker(p); break;
+        case 'operatorResetBookerPassword': result = actOperatorResetBookerPassword(p); break;
       }
       return respond(result, p.callback);
     }
@@ -574,6 +595,18 @@ function handle(p) {
         case 'getSignableBooking':        result = actGetSignableBooking(p); break;
         case 'submitArrangoerSignature':  result = actSubmitArrangoerSignature(p); break;
         case 'declineByArrangoer':        result = actDeclineByArrangoer(p); break;
+      }
+      return respond(result, p.callback);
+    }
+
+    // Booker-tilbudsflow (Fase C): bt:-token-valideret indeni, ikke bandId-gatet
+    if (BOOKER_ACTIONS[action]) {
+      switch (action) {
+        case 'bookerGetBands':    result = actBookerGetBands(p); break;
+        case 'bookerListOffers':  result = actBookerListOffers(p); break;
+        case 'bookerSaveOffer':   result = actBookerSaveOffer(p); break;
+        case 'bookerSendOffer':   result = actBookerSendOffer(p); break;
+        case 'bookerCancelOffer': result = actBookerCancelOffer(p); break;
       }
       return respond(result, p.callback);
     }
@@ -884,6 +917,260 @@ function _ensureColumn(name, col) {
   const sh = _getSheet(name);
   const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(String);
   if (headers.indexOf(col) === -1) sh.getRange(1, headers.length + 1).setValue(col);
+}
+
+// ─── Booker-konti (Booking Fase B) ────────────────────────────────────────────
+// En booker er en ekstern booking-agent (agency) med eget login. Kontoen lever i
+// master Script Properties (samme niveau som tenant-registreringen/identitets-
+// kortet) — IKKE i et enkelt bands eget Sheet — fordi en booker arbejder på
+// tværs af flere bands. Adgang til et band er en eksplicit allow-liste
+// (bandIds), tildelt/fjernet KUN af operatøren (se BOOKING-PLAN.md §Fase B).
+// Booker-password-nulstilling er operatør-medieret i v1 — der findes bevidst
+// ingen selvbetjenings-"glemt password"-vej.
+
+function _bookerKey(email) {
+  return PROP_BOOKER_PREFIX + sha256(String(email || '').toLowerCase().trim());
+}
+
+function _loadBooker(email) {
+  const e = String(email || '').toLowerCase().trim();
+  if (!e) return null;
+  const raw = PropertiesService.getScriptProperties().getProperty(_bookerKey(e));
+  if (!raw) return null;
+  try {
+    const o = JSON.parse(raw);
+    if (!Array.isArray(o.bandIds)) o.bandIds = [];
+    return o;
+  } catch (err) { return null; }
+}
+
+function _saveBooker(booker) {
+  if (!booker || !booker.email) return;
+  booker.email = String(booker.email).toLowerCase().trim();
+  PropertiesService.getScriptProperties().setProperty(_bookerKey(booker.email), JSON.stringify(booker));
+}
+
+function _listBookers() {
+  const all = PropertiesService.getScriptProperties().getProperties();
+  const out = [];
+  Object.keys(all).forEach(k => {
+    if (k.indexOf(PROP_BOOKER_PREFIX) === 0) {
+      try {
+        const b = JSON.parse(all[k]);
+        out.push({
+          email: b.email, name: b.name || '', agency: b.agency || '',
+          bandIds: Array.isArray(b.bandIds) ? b.bandIds : [],
+          status: b.status || 'active', forcePasswordChange: !!b.forcePasswordChange,
+          createdAt: b.createdAt || ''
+        });
+      } catch (e) {}
+    }
+  });
+  return out.sort((a, b) => a.email.localeCompare(b.email));
+}
+
+/** Stabilt bookerId brugt på Bookings-rækker på tværs af bands — afledt af e-mailen, ikke af navn/agency (kan ændres). */
+function _bookerId(email) {
+  return sha256(String(email || '').toLowerCase().trim());
+}
+
+/** Er bandId i bookerens tildelte adgang OG har bandet booking-flaget slået til? Fejler lukket (false) ved tvivl. */
+function _bookerHasBandAccess(booker, bandId) {
+  if (!booker || !bandId || booker.bandIds.indexOf(bandId) === -1) return false;
+  try { return !!_loadTenant(bandId).booking; } catch (e) { return false; }
+}
+
+/** Itererer bookerens tildelte (+booking-aktiverede, aktive) bands og kalder fn(bandId, tenant) i hver — spejler _forEachCrossBand. */
+function _forEachBookerBand(booker, fn) {
+  (booker.bandIds || []).forEach(bandId => {
+    let tenant;
+    try { tenant = _loadTenant(bandId); } catch (e) { return; } // band fjernet/slettet siden tildeling
+    if ((tenant.status || 'active') !== 'active') return;
+    if (!tenant.booking) return;
+    CURRENT_BAND_ID = bandId;
+    try { fn(bandId, tenant); }
+    catch (e) { Logger.log('booker cross-band fejl (' + bandId + '): ' + e); }
+  });
+}
+
+/**
+ * Finder hvilket af bookerens bands en given booking-id hører til (rækken lever
+ * i DET bands eget Sheet, ikke i et centralt register). Sætter CURRENT_BAND_ID
+ * til det fundne band som sideeffekt. Kræver at bookingen tilhører DENNE booker
+ * (bookerId-match) — ellers behandles den som "ikke fundet", så en booker aldrig
+ * kan sondere sig frem til andre bookeres tilbud via id-gæt.
+ */
+function _findBookerBooking(booker, bookingId) {
+  const ids = booker.bandIds || [];
+  const myBookerId = _bookerId(booker.email);
+  for (let i = 0; i < ids.length; i++) {
+    const bandId = ids[i];
+    let tenant;
+    try { tenant = _loadTenant(bandId); } catch (e) { continue; }
+    if ((tenant.status || 'active') !== 'active' || !tenant.booking) continue;
+    CURRENT_BAND_ID = bandId;
+    const row = _getBooking(bookingId);
+    if (row && String(row.bookerId) === myBookerId) return { bandId: bandId, row: row };
+  }
+  return null;
+}
+
+// ─── Booker-token ("bt:") — spejler _issueMemberToken/_decodeMemberToken ─────
+const BOOKER_TOKEN_TTL_SEC = 8 * 60 * 60;
+
+// Bundet til et fingeraftryk af bookerens GEMTE passwordHash — skifter operatøren
+// bookerens password (nulstilling), bliver alle udestående booker-tokens ugyldige
+// med det samme (samme egenskab som medlems-tokens allerede har).
+function _bookerAuthFingerprint(booker) {
+  return sha256(String((booker && booker.passwordHash) || '')).slice(0, 16);
+}
+
+function _issueBookerToken(booker) {
+  const exp = Date.now() + BOOKER_TOKEN_TTL_SEC * 1000;
+  const payload = Utilities.base64EncodeWebSafe(JSON.stringify({
+    role: 'booker', email: booker.email, pwFp: _bookerAuthFingerprint(booker), exp: exp
+  })).replace(/=+$/, '');
+  return { token: 'bt:' + payload + '.' + _signOperatorPayload(payload), exp: exp };
+}
+
+/** Afkoder + verificerer bt:-token (signatur, rolle, udløb, password-fingeraftryk). Returnerer FRISK booker-record eller null. */
+function _verifyBookerToken(tokenRaw) {
+  const raw = String(tokenRaw || '');
+  if (raw.indexOf('bt:') !== 0) return null;
+  const body = raw.slice(3);
+  const dot = body.indexOf('.');
+  if (dot < 1) return null;
+  const payload = body.substring(0, dot);
+  const sig = body.substring(dot + 1);
+  let expected;
+  try { expected = _signOperatorPayload(payload); } catch (e) { return null; }
+  if (sig.length !== expected.length) return null;
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ sig.charCodeAt(i);
+  if (diff !== 0) return null;
+  let data;
+  try { data = JSON.parse(Utilities.newBlob(Utilities.base64DecodeWebSafe(payload)).getDataAsString('UTF-8')); }
+  catch (e) { return null; }
+  if (!data || data.role !== 'booker' || !data.email) return null;
+  if (!data.exp || Date.now() > Number(data.exp)) return null;
+  const booker = _loadBooker(data.email);
+  if (!booker || (booker.status || 'active') !== 'active') return null;
+  if (data.pwFp !== _bookerAuthFingerprint(booker)) return null; // password nulstillet siden token blev udstedt
+  return booker;
+}
+
+/** Kræv gyldigt booker-token i p.bookerToken. Kaster en generisk fejl hvis ugyldigt/udløbet/suspenderet. */
+function _requireBooker(p) {
+  const booker = _verifyBookerToken(p.bookerToken);
+  if (!booker) throw _userError('Booker-session ugyldig eller udløbet — log ind igen');
+  return booker;
+}
+
+// Booker-login: samme lockout-model som operatør-login (5 forsøg / 15 min),
+// keyet globalt på booker-email (ingen bandId i denne kontekst — en booker
+// findes ikke "i" et band). Ensartet fejlbesked uanset om kontoen findes,
+// er suspenderet, eller password er forkert — undgår at afsløre hvilke
+// e-mails der er registrerede bookere.
+function _bookerAttemptKey(email) { return 'bookerLoginAttempts:' + String(email || '').toLowerCase().trim(); }
+function _bookerLockKey(email) { return 'bookerLoginLock:' + String(email || '').toLowerCase().trim(); }
+
+function actBookerLogin(p) {
+  const email = String(p.email || '').toLowerCase().trim();
+  const genericErr = 'Forkert email eller adgangskode';
+  const cache = CacheService.getScriptCache();
+  const lockKey = _bookerLockKey(email);
+  if (cache.get(lockKey)) return { ok: false, error: 'For mange mislykkede forsøg. Prøv igen om 15 minutter.' };
+
+  const attKey = _bookerAttemptKey(email);
+  function countFailure() {
+    const current = Number(cache.get(attKey) || 0) + 1;
+    if (current >= LOGIN_MAX_ATTEMPTS) {
+      cache.put(lockKey, '1', LOGIN_LOCK_SEC); cache.remove(attKey);
+      return { ok: false, error: 'For mange mislykkede forsøg. Prøv igen om 15 minutter.' };
+    }
+    cache.put(attKey, String(current), LOGIN_LOCK_SEC);
+    return { ok: false, error: genericErr };
+  }
+
+  const booker = _loadBooker(email);
+  if (!booker || (booker.status || 'active') !== 'active') return countFailure();
+  const pwOk = _verifyHash(String(p.passwordHash || ''), booker.pwSalt, booker.passwordHash);
+  if (!pwOk) return countFailure();
+  if (_needsRehash(booker.passwordHash)) {
+    const pf = _newPasswordFields(String(p.passwordHash));
+    booker.passwordHash = pf.passwordHash; booker.pwSalt = pf.pwSalt;
+    _saveBooker(booker);
+  }
+  cache.remove(attKey);
+  const tokenInfo = _issueBookerToken(booker);
+  return {
+    ok: true, token: tokenInfo.token, exp: tokenInfo.exp,
+    booker: { email: booker.email, name: booker.name || '', agency: booker.agency || '' },
+    forcePasswordChange: !!booker.forcePasswordChange
+  };
+}
+
+// ─── Operatør: booker-administration ─────────────────────────────────────────
+// Opret/rediger/suspendér bookere og tildel/fjern deres bandIds. Operatør-
+// medieret password-sætning: klienten sender aldrig et selvvalgt password for
+// en booker — der genereres altid en tilfældig midlertidig kode server-side,
+// vist ÉN gang i operatør-UI'et (samme mønster som ville gælde for medlemmer,
+// men her er der intet "brugeren sætter selv" alternativ i v1).
+function _genBookerTempPassword() {
+  return _secureRandomBase64(18).replace(/[^a-zA-Z0-9]/g, '').slice(0, 14);
+}
+
+function actOperatorListBookers(p) {
+  _verifyAdminSignature(p);
+  return { ok: true, bookers: _listBookers() };
+}
+
+function actOperatorSaveBooker(p) {
+  _verifyAdminSignature(p);
+  const email = String(p.email || '').toLowerCase().trim();
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { ok: false, error: 'Ugyldig e-mail' };
+  const existing = _loadBooker(email);
+  const isNew = !existing;
+  const booker = existing || { email: email, createdAt: new Date().toISOString(), status: 'active' };
+  booker.name = String(p.name || '').trim();
+  booker.agency = String(p.agency || '').trim();
+  booker.bandIds = Array.isArray(p.bandIds) ? p.bandIds.map(String) : (booker.bandIds || []);
+  if (p.status === 'active' || p.status === 'suspended') booker.status = p.status;
+
+  let tempPassword = '';
+  if (isNew || p.resetPassword) {
+    tempPassword = _genBookerTempPassword();
+    const pf = _newPasswordFields(sha256(tempPassword)); // sha256(password) = samme "clientHash"-kontrakt som klienten selv bruger ved login
+    booker.passwordHash = pf.passwordHash; booker.pwSalt = pf.pwSalt;
+    booker.forcePasswordChange = true;
+  }
+  _saveBooker(booker);
+  _audit(_operatorActor(p), isNew ? 'booker-oprettet' : 'booker-opdateret', '', email + (booker.bandIds.length ? ' → ' + booker.bandIds.join(',') : ''));
+  const result = { ok: true, isNew: isNew };
+  if (tempPassword) result.tempPassword = tempPassword; // vises ÉN gang i UI'et — gemmes ALDRIG i klartekst
+  return result;
+}
+
+function actOperatorDeleteBooker(p) {
+  _verifyAdminSignature(p);
+  const email = String(p.email || '').toLowerCase().trim();
+  if (!email) return { ok: false, error: 'e-mail mangler' };
+  PropertiesService.getScriptProperties().deleteProperty(_bookerKey(email));
+  _audit(_operatorActor(p), 'booker-slettet', '', email);
+  return { ok: true };
+}
+
+function actOperatorResetBookerPassword(p) {
+  _verifyAdminSignature(p);
+  const email = String(p.email || '').toLowerCase().trim();
+  const booker = _loadBooker(email);
+  if (!booker) return { ok: false, error: 'Booker ikke fundet' };
+  const tempPassword = _genBookerTempPassword();
+  const pf = _newPasswordFields(sha256(tempPassword));
+  booker.passwordHash = pf.passwordHash; booker.pwSalt = pf.pwSalt; booker.forcePasswordChange = true;
+  _saveBooker(booker);
+  _audit(_operatorActor(p), 'booker-password-nulstillet', '', email);
+  return { ok: true, tempPassword: tempPassword };
 }
 
 // ─── Medlems-token (afløser for at sende password-hash på hvert kald) ───────
@@ -2982,6 +3269,135 @@ function actResendSigningLink(p) {
   return { ok: true };
 }
 
+// ─── Booking-actions: booker-tilbudsflow (Fase C, bt:-token, intet Members-login) ─
+// En booker opretter et tilbud SOM KLADDE ('draft', source:'booker') — ingen
+// e-mail sendes endnu. "Send" transitionerer til 'sent' (samme statusmaskine som
+// Fase A) og udløser samme mail-til-band-admins-flow. Fra der er sendt, kører
+// resten af forløbet PRÆCIS som Fase A (band godkender & underskriver → arrangør
+// underskriver via offentligt link) — booker-tilbud er blot en anden KILDE til en
+// Bookings-række, ikke en parallel statusmaskine.
+
+function actBookerGetBands(p) {
+  const booker = _requireBooker(p);
+  const bands = [];
+  (booker.bandIds || []).forEach(bandId => {
+    let tenant;
+    try { tenant = _loadTenant(bandId); } catch (e) { return; }
+    if ((tenant.status || 'active') !== 'active' || !tenant.booking) return;
+    bands.push({ bandId: bandId, name: tenant.name || bandId });
+  });
+  return { ok: true, bands: bands };
+}
+
+function actBookerListOffers(p) {
+  const booker = _requireBooker(p);
+  const bookerId = _bookerId(booker.email);
+  const out = [];
+  _forEachBookerBand(booker, function (bandId, tenant) {
+    _readAll('Bookings').forEach(function (row) {
+      if (String(row.bookerId) === bookerId) {
+        const parsed = _parseBookingJson(row);
+        parsed.bandId = bandId; parsed.bandName = tenant.name || bandId;
+        out.push(parsed);
+      }
+    });
+  });
+  out.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+  return { ok: true, offers: out };
+}
+
+function _bookerContractDraftFromOffer(data) {
+  return {
+    id: '', type: data.type || 'Spillested', status: 'udkast',
+    arrangoer: data.arrangoer || {}, venue: data.venue || {},
+    date: data.date || '', getIn: data.getIn || '', soundcheck: data.soundcheck || '',
+    showtimeFrom: data.showtimeFrom || '', showtimeTo: data.showtimeTo || '',
+    sets: Number(data.sets) || 0, setMinutes: Number(data.setMinutes) || 0,
+    musicianCount: Number(data.musicianCount) || 0, crewCount: Number(data.crewCount) || 0,
+    guestCount: Number(data.guestCount) || 0, honorar: Number(data.honorar) || 0,
+    paymentTerms: data.paymentTerms || '', paymentTermsOther: data.paymentTermsOther || '',
+    notes: data.notes || ''
+  };
+}
+
+function actBookerSaveOffer(p) {
+  const booker = _requireBooker(p);
+  const offerId = String(p.offerId || '').trim();
+  const contractDraft = _bookerContractDraftFromOffer(p.offer || {});
+  const arr = contractDraft.arrangoer || {};
+
+  if (offerId) {
+    const found = _findBookerBooking(booker, offerId);
+    if (!found) return { ok: false, error: 'Tilbud ikke fundet' };
+    if (found.row.status !== 'draft') return { ok: false, error: 'Kun kladder kan redigeres' };
+    _updateRowById('Bookings', offerId, {
+      contractDraft: JSON.stringify(contractDraft),
+      arrangoerName: arr.contactName || arr.name || '',
+      arrangoerEmail: String(arr.email || '').trim(),
+      updatedAt: new Date()
+    });
+    return { ok: true, offerId: offerId };
+  }
+
+  const bandId = String(p.bandId || '').trim();
+  if (!_bookerHasBandAccess(booker, bandId)) return { ok: false, error: 'Ingen adgang til dette band' };
+  CURRENT_BAND_ID = bandId;
+  const bookerId = _bookerId(booker.email);
+  const newId = _insertWithId('Bookings', 'bkg', function (id) {
+    const now = new Date();
+    return {
+      id: id, bookerId: bookerId, source: 'booker', status: 'draft',
+      contractDraft: JSON.stringify(contractDraft),
+      arrangoerName: arr.contactName || arr.name || '', arrangoerEmail: String(arr.email || '').trim(),
+      docHash: '', tokenExp: '', bandSignature: '', arrangoerSignature: '', declineReason: '',
+      contractId: '', pdfFileId: '',
+      history: JSON.stringify([{ ts: now.toISOString(), actor: booker.email, from: '', to: 'draft', note: 'Kladde oprettet af booker (' + (booker.agency || '') + ')' }]),
+      createdAt: now, updatedAt: now
+    };
+  });
+  return { ok: true, offerId: newId };
+}
+
+function actBookerSendOffer(p) {
+  const booker = _requireBooker(p);
+  const offerId = String(p.offerId || '').trim();
+  if (!offerId) return { ok: false, error: 'offerId mangler' };
+  const found = _findBookerBooking(booker, offerId);
+  if (!found) return { ok: false, error: 'Tilbud ikke fundet' };
+  CURRENT_BAND_ID = found.bandId;
+  const contractDraft = _parseJson(found.row.contractDraft) || {};
+  const email = String((contractDraft.arrangoer && contractDraft.arrangoer.email) || found.row.arrangoerEmail || '').trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { ok: false, error: 'Arrangørens e-mail mangler eller er ugyldig' };
+
+  const updated = _transitionBooking(offerId, ['draft'], 'sent', booker.email + ' (' + (booker.agency || 'booker') + ')', 'Sendt til band', {});
+  try {
+    const cfg = getBandConfig();
+    const adminTo = _adminEmails().join(',');
+    if (adminTo) {
+      _sendMail({
+        to: adminTo,
+        subject: 'Nyt bookingtilbud fra ' + (booker.agency || booker.name || booker.email),
+        html: '<p>Der er modtaget et nyt bookingtilbud' +
+          (contractDraft.venue && contractDraft.venue.name ? ' vedr. <strong>' + _escHtmlSrv(contractDraft.venue.name) + '</strong>' : '') +
+          ' fra <strong>' + _escHtmlSrv(booker.agency || booker.name || booker.email) + '</strong>. Log ind i appen for at se og godkende det.</p>',
+        text: 'Nyt bookingtilbud fra ' + (booker.agency || booker.name || booker.email) + '. Log ind i appen for at se det.'
+      });
+    }
+  } catch (e) { Logger.log('Kunne ikke sende tilbuds-notifikation: ' + e); }
+  return { ok: true, offer: updated };
+}
+
+function actBookerCancelOffer(p) {
+  const booker = _requireBooker(p);
+  const offerId = String(p.offerId || '').trim();
+  if (!offerId) return { ok: false, error: 'offerId mangler' };
+  const found = _findBookerBooking(booker, offerId);
+  if (!found) return { ok: false, error: 'Tilbud ikke fundet' };
+  CURRENT_BAND_ID = found.bandId;
+  const updated = _transitionBooking(offerId, ['draft', 'sent'], 'cancelled', booker.email, String(p.reason || '').slice(0, 500));
+  return { ok: true, offer: updated };
+}
+
 // ─── Booking-actions: offentlig signeringsside (KUN token, intet login) ─────
 
 function actGetSignableBooking(p) {
@@ -3033,13 +3449,32 @@ function actSubmitArrangoerSignature(p) {
     const arrangoerSignature = { name: typedName, ts: new Date().toISOString(), ip: ip, ua: ua, docHash: fresh.docHash };
     const now = new Date();
 
-    // Fase A: kontrakten findes allerede (oprettet af "Send til underskrift") —
-    // flip status i stedet for at oprette en ny række. Fase B/C (booker-tilbud
-    // uden en forudgående kontrakt) vil skulle oprette en NY Contracts-række her —
-    // ikke implementeret endnu, da source altid er 'band' i Fase A.
-    const finalContractId = fresh.contractId || '';
+    // Fase A (source:'band'): kontrakten findes allerede (oprettet af "Send til
+    // underskrift") — flip status i stedet for at oprette en ny række.
+    // Fase C (source:'booker'): der er INTET forudgående Contracts-nummer — opret
+    // en ny række her, samme id-tildeling (_nextId('Contracts','c')) som når en
+    // band-admin gemmer en kontrakt uden selv at angive et nummer (actSaveContract),
+    // så der aldrig kan opstå en id-kollision mellem de to oprettelsesveje.
+    let finalContractId = fresh.contractId || '';
     if (finalContractId) {
       _updateRowById('Contracts', finalContractId, { status: 'godkendt', updatedAt: now });
+    } else {
+      finalContractId = _nextId('Contracts', 'c');
+      _writeRow('Contracts', {
+        id: finalContractId, type: contractDraft.type || 'Spillested', status: 'godkendt',
+        arrangoer: JSON.stringify(contractDraft.arrangoer || {}),
+        venue: JSON.stringify(contractDraft.venue || {}),
+        date: contractDraft.date ? new Date(contractDraft.date) : '',
+        getIn: contractDraft.getIn || '', soundcheck: contractDraft.soundcheck || '',
+        showtimeFrom: contractDraft.showtimeFrom || '', showtimeTo: contractDraft.showtimeTo || '',
+        sets: Number(contractDraft.sets) || 0, setMinutes: Number(contractDraft.setMinutes) || 0,
+        musicianCount: Number(contractDraft.musicianCount) || 0,
+        crewCount: Number(contractDraft.crewCount) || 0, guestCount: Number(contractDraft.guestCount) || 0,
+        honorar: Number(contractDraft.honorar) || 0,
+        paymentTerms: contractDraft.paymentTerms || '', paymentTermsOther: contractDraft.paymentTermsOther || '',
+        notes: contractDraft.notes || '', createdAt: now, updatedAt: now
+      });
+      _updateRowById('Bookings', decoded.bookingId, { contractId: finalContractId });
     }
 
     let archivedPdfId = '';
