@@ -105,7 +105,7 @@ let OPERATOR_TOKEN = null;
 
 // State
 let SESSION = null; // { email, hash, role, member }
-let CACHE = { members: null, contracts: null, dashboard: null, invoices: null, _stamp: {} };
+let CACHE = { members: null, contracts: null, dashboard: null, invoices: null, bookings: null, _stamp: {} };
 const CACHE_TTL_MS = 45 * 1000;
 const CACHE_TTL_PER_KEY = { dashboard: 90 * 1000, invoices: 90 * 1000 };
 function cacheFresh(key){ const t = CACHE._stamp[key]; return t && (Date.now() - t) < (CACHE_TTL_PER_KEY[key] || CACHE_TTL_MS); }
@@ -143,6 +143,20 @@ function prewarmAdminCaches(){
   if (!CACHE.members || !cacheFresh('members')){
     apiGet('getMembers').then(d => { if (d && d.ok){ CACHE.members = d.members; cacheTouch('members'); } }).catch(()=>{});
   }
+  if (BAND_CONFIG.booking && (!CACHE.bookings || !cacheFresh('bookings'))){
+    apiGet('listIncomingBookings').then(d => { if (d && d.ok){ CACHE.bookings = d.bookings; cacheTouch('bookings'); _updateBookingsBadge(); } }).catch(()=>{});
+  }
+}
+
+// Viser antal bookinger der afventer bandets godkendelse ("sent") som et rødt
+// tal i sidebar-navigationen. Kun synlig når BAND_CONFIG.booking er slået til
+// (se applyBranding i 09-boot.js, som også toggler selve nav-punktets display).
+function _updateBookingsBadge(){
+  const n = (CACHE.bookings || []).filter(b => b.status === 'sent').length;
+  document.querySelectorAll('[data-route="bookings"] .nav-badge').forEach(el => {
+    el.textContent = n ? String(n) : '';
+    el.style.display = n ? '' : 'none';
+  });
 }
 
 // ─── Auth helpers ──────────────────────────────────────────────────

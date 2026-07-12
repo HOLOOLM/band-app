@@ -242,6 +242,7 @@ function opRenderBandList(){
             <span class="mono" style="color:var(--cream-mute);font-size:11px">${id}</span>
             ${opStatusPill(t.status)}
             ${t.crossBand ? opChip('På tværs ✓', 'ok') : ''}
+            ${t.booking ? opChip('Booking ✓', 'ok') : ''}
           </div>
           <div id="health-${id}" style="margin-top:9px;font-size:12px;color:var(--cream-mute)">${healthInner}</div>
         </div>
@@ -249,6 +250,7 @@ function opRenderBandList(){
           <button class="btn btn-ghost btn-sm" onclick="opOpenEditor('${id}')">Rediger</button>
           <button class="btn btn-text btn-sm" onclick="opRenderRename('${id}')">Omdøb</button>
           <button class="btn btn-text btn-sm" onclick="opToggleCrossBand('${id}',${t.crossBand?'false':'true'})" title="Betalt feature: musikere kan se jobs og honorar på tværs af bands">${t.crossBand?'Slå tværgående fra':'Slå tværgående til'}</button>
+          <button class="btn btn-text btn-sm" onclick="opToggleBooking('${id}',${t.booking?'false':'true'})" title="Booking & e-signatur: bandet kan sende kontrakter til elektronisk underskrift">${t.booking?'Slå booking fra':'Slå booking til'}</button>
           <button class="btn btn-text btn-sm" onclick="opToggleStatus('${id}','${suspended?'active':'suspended'}')">${suspended?'Genaktivér':'Sæt på pause'}</button>
         </div>
       </div>
@@ -341,6 +343,23 @@ async function opToggleCrossBand(bandId, enable){
     if (d && d.ok){
       const t = OP_TENANTS.find(x => x.bandId === bandId); if (t) t.crossBand = on;
       toast(on ? 'Tværgående slået til' : 'Tværgående slået fra');
+      opRenderBandList();
+    } else toast((d&&d.error)||'Kunne ikke ændre feature', 'err');
+  } catch(e){ toast('Netværksfejl: '+e.message, 'err'); }
+}
+
+// Slår Fase A-e-signaturflowet til/fra for bandet. Håndhæves server-side i hver
+// booking-action (_bookingEnabled), så en slukning midt i et forløb med det samme
+// gør udestående signeringslinks ugyldige — ikke kun et UI-skjul.
+async function opToggleBooking(bandId, enable){
+  const on = (enable === true || enable === 'true');
+  if (on && !confirm('Slå booking & e-signatur TIL for "' + bandId + '"?\n\nBandet kan herefter sende kontrakter til elektronisk underskrift hos arrangøren.')) return;
+  if (!on && !confirm('Slå booking & e-signatur FRA for "' + bandId + '"?\n\nUdestående signeringslinks holder op med at virke med det samme.')) return;
+  try {
+    const d = await _apiCall('updateTenant', { targetBandId: bandId, booking: on });
+    if (d && d.ok){
+      const t = OP_TENANTS.find(x => x.bandId === bandId); if (t) t.booking = on;
+      toast(on ? 'Booking slået til' : 'Booking slået fra');
       opRenderBandList();
     } else toast((d&&d.error)||'Kunne ikke ændre feature', 'err');
   } catch(e){ toast('Netværksfejl: '+e.message, 'err'); }
@@ -1010,6 +1029,8 @@ function applyBranding(){
       if (c.bandName) el.alt = c.bandName;
     });
   }
+  // Booking & e-signatur: feature-flag operatøren slår til pr. band (Fase A).
+  document.querySelectorAll('[data-route="bookings"]').forEach(el => { el.style.display = c.booking ? '' : 'none'; });
   const emailInput = document.getElementById('emailInput');
   if (emailInput && c.emailDomain) emailInput.placeholder = 'navn@' + c.emailDomain;
   document.querySelectorAll('[data-band-tagline]').forEach(el => {

@@ -71,7 +71,7 @@ async function doChangePassword(){
 // login i samme fane (delt maskine) ikke kortvarigt kan vise forrige brugers
 // kontrakter/honorar, før nye data er hentet.
 function _resetAppState(){
-  CACHE = { members: null, contracts: null, dashboard: null, invoices: null, _stamp: {} };
+  CACHE = { members: null, contracts: null, dashboard: null, invoices: null, bookings: null, _stamp: {} };
   if (typeof MEMBER_JOBS_CACHE !== 'undefined') MEMBER_JOBS_CACHE = null;
   if (typeof MEMBER_JOBS_CACHE_ALL !== 'undefined') MEMBER_JOBS_CACHE_ALL = null;
   window._lastHonorar = null;
@@ -234,6 +234,7 @@ function setAdminRoute(route, params){
   if (route === 'dashboard') return renderDashboard();
   if (route === 'contracts') return renderContractsList();
   if (route === 'contractEdit') return renderContractEditor(params && params.id);
+  if (route === 'bookings') return renderBookingsList();
   if (route === 'members') return renderMembers();
   if (route === 'honorar') return renderAdminHonorar();
   if (route === 'invoices') return renderInvoicesList();

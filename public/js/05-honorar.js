@@ -507,3 +507,21 @@ function copyContract(){
   drawContractEditor();
 }
 
+// Booking & e-signatur (Fase A): opretter et signeringsforløb for den GEMTE
+// kontrakt (kræver at kontrakten allerede er gemt — knappen vises kun for
+// eksisterende kontrakter, jf. drawContractEditor). Selve godkendelsen +
+// underskriften sker bagefter fra "Bookinger" i menuen (11-bookings-admin.js).
+async function sendContractForSigning(){
+  const arr = EDITING.arrangoer || {};
+  if (!arr.email){ toast('Udfyld arrangørens e-mail i sektion 02 først', 'err'); return; }
+  if (!confirm('Send "' + (EDITING.venue.name || 'kontrakten') + '" til elektronisk underskrift hos ' + arr.email + '?')) return;
+  try {
+    const d = await apiPost('sendContractForSigning', { contractId: EDITING.id });
+    if (!d || !d.ok){ toast((d && d.error) || 'Kunne ikke sende til underskrift', 'err'); return; }
+    toast('Sendt — godkend og underskriv den fra "Bookinger" i menuen');
+    cacheBust('bookings'); cacheBust('contracts'); cacheBust('dashboard');
+    broadcastInvalidate(['contracts', 'dashboard']);
+    setAdminRoute('bookings');
+  } catch(e){ toast('Netværksfejl: ' + e.message, 'err'); }
+}
+

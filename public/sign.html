@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="da">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Underskriv kontrakt</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="app.css">
+<style>
+  /* Standalone signeringsside — ingen sidebar/app-shell, kun kontrakt + underskriftsboks. */
+  body{min-height:100vh}
+  .sign-wrap{max-width:640px;margin:0 auto;padding:32px 20px 80px}
+  .sign-head{text-align:center;margin-bottom:24px}
+  .sign-head .dot{width:8px;height:8px;border-radius:50%;background:var(--accent);display:inline-block;margin-right:8px;vertical-align:middle}
+  .sign-head .name{font-family:var(--font-mono);font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--accent);vertical-align:middle}
+  .sign-head h1{font-family:var(--font-display);font-size:30px;font-weight:400;margin:10px 0 4px}
+  .sign-head .lede{color:var(--cream-mute);font-size:13px}
+  .contract-box{background:#E8E4DF;border-radius:var(--radius-lg);padding:20px;margin-bottom:20px;overflow-x:auto}
+  .contract-box table{width:100%}
+  .sign-panel{padding:22px}
+  .sign-panel .field{margin-bottom:14px}
+  .sign-actions{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end;margin-top:6px}
+  .status-box{text-align:center;padding:60px 24px}
+  .status-box .icn{font-size:40px;line-height:1;margin-bottom:14px}
+  .status-box h2{font-family:var(--font-display);font-size:26px;font-weight:400;margin:0 0 8px}
+  .status-box p{color:var(--cream-mute);font-size:14px;max-width:420px;margin:0 auto}
+  .confirm-box{font-size:12px;color:var(--cream-mute);line-height:1.6;margin-bottom:16px;padding:12px 14px;border:1px solid var(--ink-line);border-radius:var(--radius);background:var(--field-bg)}
+</style>
+</head>
+<body>
+<div class="sign-wrap">
+  <div class="sign-head">
+    <span class="dot"></span><span class="name">Elektronisk underskrift</span>
+    <h1 class="serif" id="signBandName">Kontrakt</h1>
+    <div class="lede" id="signVenueName"></div>
+  </div>
+  <div id="signRoot">
+    <div class="status-box"><span class="spinner" style="width:20px;height:20px"></span><p>Henter kontrakt…</p></div>
+  </div>
+</div>
+<script src="js/sign.js"></script>
+</body>
+</html>

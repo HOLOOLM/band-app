@@ -34,7 +34,14 @@ const SHEET_HEADERS = {
   Invoices: ['id', 'contractId', 'invoiceNr', 'date', 'amount', 'status', 'driveFileId', 'driveUrl', 'createdAt', 'paidAt'],
   DistanceCache: ['key', 'origin', 'destination', 'km', 'cachedAt'],
   // Brand/config — key/value rows. Læses via getBandConfig() med 5 min cache.
-  Settings: ['key', 'value']
+  Settings: ['key', 'value'],
+  // Booking & e-signatur (Fase A). bookerId er tom i Fase A (ingen booker-rolle
+  // endnu) — feltet er med fra start så Fase B/C ikke kræver en skemaændring.
+  // JSON-felter (contractDraft/bandSignature/arrangoerSignature/history) gemmes
+  // som strenge, ligesom Contracts.arrangoer/venue.
+  Bookings: ['id', 'bookerId', 'source', 'status', 'contractDraft', 'arrangoerName',
+    'arrangoerEmail', 'docHash', 'tokenExp', 'bandSignature', 'arrangoerSignature',
+    'declineReason', 'contractId', 'pdfFileId', 'history', 'createdAt', 'updatedAt']
 };
 
 // Default-værdier for Settings — bruges som fallback når en key mangler.
@@ -137,7 +144,7 @@ function _listTenants() {
     if (k.indexOf(PROP_TENANT_PREFIX) === 0) {
       try {
         const data = JSON.parse(all[k]);
-        tenants.push({ bandId: k.substring(PROP_TENANT_PREFIX.length), sheetId: data.sheetId, name: data.name, status: data.status || 'active', crossBand: !!data.crossBand });
+        tenants.push({ bandId: k.substring(PROP_TENANT_PREFIX.length), sheetId: data.sheetId, name: data.name, status: data.status || 'active', crossBand: !!data.crossBand, booking: !!data.booking });
       } catch (e) {}
     }
   });
@@ -527,6 +534,13 @@ const MASTER_ACTIONS = { listTenants: 1, registerTenant: 1, deleteTenant: 1, upd
 // det centrale identitets-kort (SSO) og sætter selv CURRENT_BAND_ID pr. band.
 const IDENTITY_ACTIONS = { getAllJobs: 1, getAllHonorar: 1 };
 
+// Offentlige signerings-actions (Booking Fase A): INGEN bandId i requesten — en
+// arrangør uden login kender kun sit signeringstoken (p.t). bandId udledes af
+// selve tokenets signerede payload (_decodeSigningToken), akkurat som IDENTITY_
+// ACTIONS selv sætter CURRENT_BAND_ID. Ukendt/udløbet/manipuleret token → generisk
+// dansk fejl, aldrig et løft af hvorfor (ingen oracle for "findes denne booking").
+const PUBLIC_TOKEN_ACTIONS = { getSignableBooking: 1, submitArrangoerSignature: 1, declineByArrangoer: 1 };
+
 function handle(p) {
   const action = p.action;
   let result;
@@ -551,6 +565,15 @@ function handle(p) {
       switch (action) {
         case 'getAllJobs':    result = actGetAllJobs(p); break;
         case 'getAllHonorar': result = actGetAllHonorar(p); break;
+      }
+      return respond(result, p.callback);
+    }
+
+    if (PUBLIC_TOKEN_ACTIONS[action]) {
+      switch (action) {
+        case 'getSignableBooking':        result = actGetSignableBooking(p); break;
+        case 'submitArrangoerSignature':  result = actSubmitArrangoerSignature(p); break;
+        case 'declineByArrangoer':        result = actDeclineByArrangoer(p); break;
       }
       return respond(result, p.callback);
     }
@@ -592,6 +615,13 @@ function handle(p) {
       case 'exportMyData':    result = actExportMyData(p); break;
       case 'updateJobStartAddress': result = actUpdateJobStartAddress(p); break;
       case 'recalcJobDistance': result = actRecalcJobDistance(p); break;
+      // Booking & e-signatur (Fase A) — kræver alle _bookingEnabled(bandId) indeni
+      case 'sendContractForSigning': result = actSendContractForSigning(p); break;
+      case 'listIncomingBookings':   result = actListIncomingBookings(p); break;
+      case 'approveAndSignBooking':  result = actApproveAndSignBooking(p); break;
+      case 'declineBooking':         result = actDeclineBooking(p); break;
+      case 'cancelBooking':          result = actCancelBooking(p); break;
+      case 'resendSigningLink':      result = actResendSigningLink(p); break;
       // Public boot config + rider download
       case 'getConfig':       result = actGetConfig(p); break;
       case 'getRider':        result = actGetRider(p); break;
@@ -2538,6 +2568,559 @@ function _invalidateBandConfigCache() {
   try { CacheService.getScriptCache().remove(_cacheKey('bandConfig')); } catch (e) {}
 }
 
+// ─── Booking & e-signatur (Fase A) ───────────────────────────────────────────
+// Fase A: bandets EGEN admin sender en eksisterende kontrakt til underskrift
+// ("Send til underskrift"). Der er ingen booker-rolle endnu (Fase B/C) — hvert
+// tilbud har source:'band' og peger altid på en allerede eksisterende Contracts-
+// række (contractId sat fra start). Se BOOKING-PLAN.md for hele statusmaskinen.
+//
+// Sikkerhed (jf. sikkerhedsauditten i BOOKING-PLAN.md):
+// - ALT gates af _bookingEnabled(bandId) — både de autentificerede actions
+//   nedenfor OG de offentlige (PUBLIC_TOKEN_ACTIONS i handle()).
+// - Signeringstokenet ("bk:") er HMAC-signeret med samme MASTER_ADMIN_SECRET som
+//   operatør-/medlems-tokens, men har sin egen "role"-værdi ('arr-sign') som
+//   _decodeSigningToken kræver — et medlems- eller operatør-token kan aldrig
+//   bruges her, og omvendt.
+// - Tokenet er bundet til et docHash af kontraktens indhold. Redigeres kontrakten
+//   efter afsendelse er der ingen redigerings-vej i Fase A, så docHash er stabilt
+//   fra "sent" til "completed" — men hvis det nogensinde IKKE matcher (token for
+//   en anden/ældre version), afvises signeringen.
+// - Alle fejl på det offentlige flow er bevidst identiske ("Linket er ugyldigt
+//   eller udløbet.") uanset om årsagen er forkert signatur, udløb, forkert
+//   docHash, forkert status eller ukendt booking — ingen oracle.
+
+const BOOKING_TOKEN_TTL_SEC = 14 * 24 * 60 * 60; // 14 dage
+const BOOKING_DOC_TEMPLATE_VERSION = 1; // bump hvis _buildContractHtmlServer's juridiske indhold ændres — gør udestående docHashes bevidst ugyldige
+
+function _getBooking(bookingId) {
+  return _readAll('Bookings').find(b => String(b.id) === String(bookingId)) || null;
+}
+
+function _parseBookingJson(row) {
+  return Object.assign({}, row, {
+    contractDraft: _parseJson(row.contractDraft) || {},
+    bandSignature: _parseJson(row.bandSignature) || null,
+    arrangoerSignature: _parseJson(row.arrangoerSignature) || null,
+    history: _parseJson(row.history) || []
+  });
+}
+
+/**
+ * Al status-transition på en booking går gennem HER: genlæs under lås, assert at
+ * nuværende status er en af de tilladte, patch + historik + audit i én transaktion.
+ * Undgår at to samtidige klik (fx admin-godkend + operatør-annullér) kan bringe
+ * en booking i en selvmodsigende tilstand.
+ */
+function _transitionBooking(bookingId, fromStatuses, to, actor, note, extraPatch) {
+  return _withLock(function () {
+    const row = _getBooking(bookingId);
+    if (!row) throw _userError('Booking ikke fundet');
+    if (fromStatuses.indexOf(String(row.status)) === -1) {
+      throw _userError('Denne handling kan ikke udføres i status "' + row.status + '"');
+    }
+    const history = _parseJson(row.history) || [];
+    history.push({ ts: new Date().toISOString(), actor: actor, from: row.status, to: to, note: note || '' });
+    const patch = Object.assign({ status: to, updatedAt: new Date(), history: JSON.stringify(history) }, extraPatch || {});
+    _updateRowById('Bookings', bookingId, patch);
+    _audit(actor, 'booking-' + to, CURRENT_BAND_ID, String(bookingId) + (note ? ' — ' + note : ''));
+    return _parseBookingJson(Object.assign({}, row, patch));
+  });
+}
+
+// Deterministisk JSON-serialisering (sorterede keys), så samme kontraktindhold
+// ALTID giver samme hash uanset i hvilken rækkefølge felterne blev bygget.
+function _canonicalJson(obj) {
+  if (obj === null || typeof obj !== 'object') return JSON.stringify(obj === undefined ? null : obj);
+  if (Array.isArray(obj)) return '[' + obj.map(_canonicalJson).join(',') + ']';
+  const keys = Object.keys(obj).sort();
+  return '{' + keys.map(k => JSON.stringify(k) + ':' + _canonicalJson(obj[k])).join(',') + '}';
+}
+
+// Hash af selve kontraktindholdet (IKKE af renderet HTML — det er skrøbeligt over
+// for logo-caching/renderings-drift). "|v<N>" binder hashen til skabelon-versionen,
+// så en fremtidig ændring af _buildContractHtmlServer's juridiske tekst bevidst
+// gør alle udestående signeringslinks ugyldige.
+function _computeDocHash(contractDraft) {
+  return sha256(_canonicalJson(contractDraft) + '|v' + BOOKING_DOC_TEMPLATE_VERSION);
+}
+
+function _issueSigningToken(bookingId, bandId, docHash) {
+  const exp = Date.now() + BOOKING_TOKEN_TTL_SEC * 1000;
+  const payload = Utilities.base64EncodeWebSafe(JSON.stringify({
+    v: 1, role: 'arr-sign', bookingId: String(bookingId), bandId: String(bandId),
+    docHash: String(docHash), exp: exp
+  })).replace(/=+$/, '');
+  return { token: 'bk:' + payload + '.' + _signOperatorPayload(payload), exp: exp };
+}
+
+/** Afkoder + verificerer signatur/rolle/udløb på et signeringstoken. Returnerer payload eller null. */
+function _decodeSigningToken(tokenRaw) {
+  const raw = String(tokenRaw || '');
+  if (raw.indexOf('bk:') !== 0) return null;
+  const body = raw.slice(3);
+  const dot = body.indexOf('.');
+  if (dot < 1) return null;
+  const payload = body.substring(0, dot);
+  const sig = body.substring(dot + 1);
+  let expected;
+  try { expected = _signOperatorPayload(payload); } catch (e) { return null; }
+  if (sig.length !== expected.length) return null;
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ sig.charCodeAt(i);
+  if (diff !== 0) return null;
+  let data;
+  try { data = JSON.parse(Utilities.newBlob(Utilities.base64DecodeWebSafe(payload)).getDataAsString('UTF-8')); }
+  catch (e) { return null; }
+  if (!data || data.role !== 'arr-sign' || !data.bookingId || !data.bandId) return null;
+  if (!data.exp || Date.now() > Number(data.exp)) return null;
+  return data;
+}
+
+// appOrigin injiceres af Worker'en (aldrig klient-styret — se apiCall i worker.js)
+// ud fra selve requestens URL, så Apps Script kan bygge et klikbart link uden at
+// kende Worker'ens domæne på forhånd.
+function _signingUrl(appOrigin, token) {
+  const origin = String(appOrigin || '').replace(/\/+$/, '');
+  return origin + '/sign?t=' + encodeURIComponent(token);
+}
+
+function _adminEmails() {
+  return _readAll('Members').filter(m => String(m.role) === 'admin' && m.email).map(m => m.email);
+}
+
+/**
+ * Central e-mail-helper. Degraderer PÆNT ved kvoteproblemer/fejl — kaldere skal
+ * altid selv wrappe i try/catch, så en mislykket afsendelse ALDRIG blokerer en
+ * signatur/transition. attachmentFileId (valgfri) hentes som Drive-blob.
+ */
+function _sendMail(opts) {
+  const to = String((opts && opts.to) || '').trim();
+  if (!to) return false;
+  try {
+    if (MailApp.getRemainingDailyQuota() <= 0) {
+      _audit('system', 'email-kvote-opbrugt', CURRENT_BAND_ID, 'til: ' + to);
+      return false;
+    }
+    const params = { htmlBody: opts.html || opts.text || '' };
+    if (opts.attachmentFileId) {
+      try { params.attachments = [DriveApp.getFileById(opts.attachmentFileId).getBlob()]; }
+      catch (e) { Logger.log('_sendMail: kunne ikke vedhæfte fil ' + opts.attachmentFileId + ': ' + e); }
+    }
+    MailApp.sendEmail(to, opts.subject || '', opts.text || '', params);
+    return true;
+  } catch (e) {
+    Logger.log('_sendMail fejlede (til ' + to + '): ' + e);
+    try { _audit('system', 'email-fejl', CURRENT_BAND_ID, 'til: ' + to + ' — ' + e); } catch (e2) { /* ignorér */ }
+    return false;
+  }
+}
+
+function _buildSigningEmailHtml(cfg, contractDraft, signUrl) {
+  const esc = _escHtmlSrv;
+  const venue = contractDraft.venue || {};
+  return '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#2A2A2A;line-height:1.6">' +
+    '<p>Hej,</p>' +
+    '<p><strong>' + esc(cfg.bandName || '') + '</strong> har sendt en kontrakt til din underskrift' +
+    (venue.name ? ' vedrørende <strong>' + esc(venue.name) + '</strong>' : '') +
+    (contractDraft.date ? ' d. ' + esc(_fmtDateDa(contractDraft.date)) : '') + '.</p>' +
+    '<p><a href="' + esc(signUrl) + '" style="display:inline-block;background:#0F213C;color:#fff;padding:10px 18px;border-radius:4px;text-decoration:none">Se og underskriv kontrakten</a></p>' +
+    '<p style="font-size:12px;color:#8A8A8A">Virker knappen ikke? Kopiér dette link: ' + esc(signUrl) + '</p>' +
+    '</div>';
+}
+
+function _wrapHtmlDocument(bodyHtml) {
+  return '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>' +
+    'body{font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#2A2A2A;margin:0;padding:24px}' +
+    'table{border-collapse:collapse;width:100%}' +
+    '@page{margin:10mm;size:A4}' +
+    '</style></head><body>' + bodyHtml + '</body></html>';
+}
+
+// Samme da-DK-begrænsning som _fmtDateDa: V8-runtime i Apps Script har ikke fuld
+// ICU-understøttelse, så toLocaleTimeString('da-DK',...) kan ikke bruges.
+function _fmtTimeDa(d) {
+  if (!d) return '';
+  try { return Utilities.formatDate(new Date(d), Session.getScriptTimeZone() || 'Europe/Copenhagen', 'HH:mm'); }
+  catch (e) { return ''; }
+}
+
+function _getContractArchiveFolder(year) {
+  const root = _getBandSubFolder('Underskrevne kontrakter', true);
+  const yearStr = String(year);
+  const it = root.getFoldersByName(yearStr);
+  if (it.hasNext()) return it.next();
+  const f = root.createFolder(yearStr);
+  _lockdownFolder(f);
+  return f;
+}
+
+/**
+ * Kontrakt-HTML til bookingflowet (signeringsside + arkiveret PDF) — server-side
+ * ækvivalent af klientens drawPreview() (05-honorar.js), FORENKLET til Fase A:
+ * kun selve kontraktsiden (parter, spillested, tid, honorar, betingelser) +
+ * signaturblokke. Rider-siderne (tekniske krav/sceneplan) er BEVIDST IKKE med i
+ * det underskrevne dokument i v1 — de findes stadig i den almindelige kontrakt-PDF
+ * i appen, og aftaleteksten nedenfor henviser eksplicit til at rideren godkendes
+ * ved underskrift. Returnerer et HTML-FRAGMENT (ingen <html>/<head>/<body>) —
+ * kaldere wrapper selv med _wrapHtmlDocument() til PDF, eller injicerer fragmentet
+ * direkte på den offentlige signeringsside. Tabel-baseret layout, ikke flex/grid:
+ * _htmlToPdfBlob's Docs-konvertering understøtter kun simpel CSS — spejler
+ * _buildInvoiceHtmlServer.
+ */
+function _buildContractHtmlServer(contractDraft, cfg, logoDataUrl, signatures, docHash) {
+  const esc = _escHtmlSrv;
+  const c = contractDraft || {};
+  const arr = c.arrangoer || {};
+  const venue = c.venue || {};
+  const sig = signatures || {};
+  const logoImg = logoDataUrl ? '<img src="' + logoDataUrl + '" alt="" style="height:48px" />' : '';
+  const honorarTxt = c.honorar ? _fmtMoneyDa(c.honorar) + ' kr.' : '—';
+  const paymentTxt = c.paymentTerms === 'Andet' && c.paymentTermsOther ? c.paymentTermsOther : (c.paymentTerms || '');
+  const venueAddr = [venue.address, [venue.postnr, venue.city].filter(Boolean).join(' ')].filter(Boolean).map(esc).join(', ');
+
+  function sigBlock(label, s) {
+    if (!s) {
+      return '<td style="width:50%;vertical-align:top;padding:10px 12px;border:1px dashed #B8A88A;border-radius:4px;font-size:11px;color:#8A6F4D">' +
+        '<strong>' + esc(label) + '</strong><br/>Afventer underskrift</td>';
+    }
+    const timeTxt = s.ts ? ' kl. ' + esc(_fmtTimeDa(s.ts)) : '';
+    return '<td style="width:50%;vertical-align:top;padding:10px 12px;border:1px solid #7FA985;border-radius:4px;font-size:11px;color:#2A2A2A;background:#EFF6EF">' +
+      '<strong>' + esc(label) + ':</strong> ' + esc(s.name || '') + '<br/>' +
+      esc(_fmtDateDa(s.ts)) + timeTxt + '<br/>' +
+      'IP ' + esc(s.ip || '—') + ' · Dok ' + esc(String(s.docHash || '').slice(0, 12)) + '…' +
+      '</td>';
+  }
+
+  return (
+    '<table style="background:#0F213C;margin-bottom:20px"><tr>' +
+      '<td style="padding:14px 20px">' + logoImg + '</td>' +
+      '<td style="padding:14px 20px;text-align:right;color:#ffffff;font-size:22px;font-weight:bold">' + esc(venue.name || 'Kontrakt') + '</td>' +
+      '<td style="padding:14px 20px;text-align:right;color:rgba(255,255,255,.65);font-size:10px">Kontrakt nr.<br/><strong style="color:#fff;font-size:13px">' + esc(c.id || '—') + '</strong></td>' +
+    '</tr></table>' +
+    '<table style="margin-bottom:14px">' +
+      '<tr><th style="background:#555;color:#fff;text-align:left;padding:5px 8px;font-size:11px;width:50%">Arrangør</th>' +
+      '<th style="background:#555;color:#fff;text-align:left;padding:5px 8px;font-size:11px">Optrædende</th></tr>' +
+      '<tr>' +
+        '<td style="padding:4px 8px;border-bottom:1px solid #D9CFBE;font-size:11px"><span style="color:#8A6F4D">Navn</span> ' + esc(arr.name || '') + '</td>' +
+        '<td style="padding:4px 8px;border-bottom:1px solid #D9CFBE;font-size:11px"><span style="color:#8A6F4D">Band</span> ' + esc(cfg.bandName || '') + '</td>' +
+      '</tr><tr>' +
+        '<td style="padding:4px 8px;border-bottom:1px solid #D9CFBE;font-size:11px"><span style="color:#8A6F4D">Adresse</span> ' + esc(arr.address || '') + (arr.postnr || arr.city ? ', ' + esc([arr.postnr, arr.city].filter(Boolean).join(' ')) : '') + '</td>' +
+        '<td style="padding:4px 8px;border-bottom:1px solid #D9CFBE;font-size:11px"><span style="color:#8A6F4D">Kontakt</span> ' + esc(cfg.contactName || '') + '</td>' +
+      '</tr><tr>' +
+        '<td style="padding:4px 8px;border-bottom:1px solid #D9CFBE;font-size:11px"><span style="color:#8A6F4D">Kontaktperson</span> ' + esc(arr.contactName || '') + '</td>' +
+        '<td style="padding:4px 8px;border-bottom:1px solid #D9CFBE;font-size:11px"><span style="color:#8A6F4D">Tlf.</span> ' + esc(cfg.contactPhone || '') + '</td>' +
+      '</tr><tr>' +
+        '<td style="padding:4px 8px;border-bottom:1px solid #D9CFBE;font-size:11px"><span style="color:#8A6F4D">Mail</span> ' + esc(arr.email || '') + '</td>' +
+        '<td style="padding:4px 8px;border-bottom:1px solid #D9CFBE;font-size:11px"><span style="color:#8A6F4D">Mail</span> ' + esc(cfg.contactEmail || '') + '</td>' +
+      '</tr>' +
+    '</table>' +
+    '<table style="margin-bottom:14px">' +
+      '<tr><th colspan="2" style="background:#555;color:#fff;text-align:left;padding:5px 8px;font-size:11px">Spillested &amp; tidspunkter</th></tr>' +
+      '<tr>' +
+        '<td style="padding:4px 8px;border-bottom:1px solid #D9CFBE;font-size:11px"><span style="color:#8A6F4D">Navn</span> ' + esc(venue.name || '') + '</td>' +
+        '<td style="padding:4px 8px;border-bottom:1px solid #D9CFBE;font-size:11px"><span style="color:#8A6F4D">Adresse</span> ' + venueAddr + '</td>' +
+      '</tr><tr>' +
+        '<td style="padding:4px 8px;border-bottom:1px solid #D9CFBE;font-size:11px"><span style="color:#8A6F4D">Dato</span> ' + esc(_fmtDateDa(c.date)) + '</td>' +
+        '<td style="padding:4px 8px;border-bottom:1px solid #D9CFBE;font-size:11px"><span style="color:#8A6F4D">Type</span> ' + esc(c.type || '') + '</td>' +
+      '</tr><tr>' +
+        '<td style="padding:4px 8px;border-bottom:1px solid #D9CFBE;font-size:11px"><span style="color:#8A6F4D">Get-in</span> ' + esc(c.getIn || '') + '</td>' +
+        '<td style="padding:4px 8px;border-bottom:1px solid #D9CFBE;font-size:11px"><span style="color:#8A6F4D">Lydprøve færdig</span> ' + esc(c.soundcheck || '') + '</td>' +
+      '</tr><tr>' +
+        '<td style="padding:4px 8px;border-bottom:1px solid #D9CFBE;font-size:11px"><span style="color:#8A6F4D">Spilletid</span> ' + esc(c.showtimeFrom || '') + '–' + esc(c.showtimeTo || '') + '</td>' +
+        '<td style="padding:4px 8px;border-bottom:1px solid #D9CFBE;font-size:11px"><span style="color:#8A6F4D">Sæt</span> ' + (Number(c.sets) || 0) + ' á ' + (Number(c.setMinutes) || 0) + ' min.</td>' +
+      '</tr><tr>' +
+        '<td style="padding:4px 8px;border-bottom:1px solid #D9CFBE;font-size:11px"><span style="color:#8A6F4D">Musikere/crew/gæster</span> ' + (Number(c.musicianCount) || 0) + ' / ' + (Number(c.crewCount) || 0) + ' / ' + (Number(c.guestCount) || 0) + '</td>' +
+        '<td style="padding:4px 8px;border-bottom:1px solid #D9CFBE;font-size:11px;font-weight:bold;color:#0F213C">Honorar ' + esc(honorarTxt) + '</td>' +
+      '</tr>' +
+      (c.notes ? '<tr><td colspan="2" style="padding:5px 8px;border-bottom:1px solid #D9CFBE;font-size:11px"><strong>Særlige aftaler:</strong> ' + esc(c.notes) + '</td></tr>' : '') +
+    '</table>' +
+    '<div style="padding:8px;border-bottom:2px solid #B8A88A;font-size:11px;margin-bottom:14px">Betalingsbetingelser: <strong>' + esc(paymentTxt) + '</strong></div>' +
+    '<div style="background:#666;color:#fff;text-align:center;padding:5px 8px;font-size:12px;font-weight:bold;margin-bottom:10px">Betingelser</div>' +
+    '<div style="font-size:11px;padding:0 4px;margin-bottom:16px">' +
+      '<p style="font-weight:bold;margin:0 0 6px">Kontrakten er en bindende aftale mellem optrædende og arrangør.</p>' +
+      '<ul style="margin:0;padding-left:14px;line-height:1.7">' +
+        '<li><strong>Koda/Gramex</strong> Ved offentlig adgang til arrangementet skal arrangøren betale vederlag til Koda og Gramex.</li>' +
+        '<li><strong>Rider</strong> Ved underskrift af denne kontrakt godkender arrangør ligeledes den tekniske rider, som er tilgængelig hos ' + esc(cfg.bandName || '') + '.</li>' +
+        '<li><strong>Afbestilling kan ikke finde sted</strong>, medmindre begge parter skriftligt samtykker.</li>' +
+      '</ul>' +
+    '</div>' +
+    '<div style="background:#666;color:#fff;text-align:center;padding:5px 8px;font-size:12px;font-weight:bold;margin-bottom:12px">Underskrifter (elektronisk)</div>' +
+    '<table><tr>' + sigBlock(cfg.bandName || 'Bandet', sig.band) + '<td style="width:12px"></td>' + sigBlock('Arrangør', sig.arrangoer) + '</tr></table>' +
+    '<div style="margin-top:18px;font-size:9px;color:#8A8A8A">Elektronisk underskrevet dokument · Dokument-id: ' + esc(String(docHash || '').slice(0, 16)) + '…</div>'
+  );
+}
+
+// ─── Booking-actions: band-admin (autentificeret) ────────────────────────────
+
+function actSendContractForSigning(p) {
+  const me = _requireAdmin(p.email, p.passwordHash);
+  if (!_bookingEnabled(CURRENT_BAND_ID)) return { ok: false, error: 'Booking & e-signatur er ikke aktiveret for dette band' };
+  const contractId = String(p.contractId || '').trim();
+  if (!contractId) return { ok: false, error: 'contractId mangler' };
+  const row = _readAll('Contracts').find(r => String(r.id) === contractId);
+  if (!row) return { ok: false, error: 'Kontrakt ikke fundet' };
+  if (String(row.status) === 'godkendt') return { ok: false, error: 'Kontrakten er allerede godkendt' };
+  const activeBooking = _readAll('Bookings').find(b => String(b.contractId) === contractId && ['sent', 'band_signed'].indexOf(String(b.status)) !== -1);
+  if (activeBooking) return { ok: false, error: 'Der er allerede et aktivt underskriftsforløb for denne kontrakt' };
+
+  const contractDraft = _serializeContract(row);
+  const arr = contractDraft.arrangoer || {};
+  const email = String(arr.email || '').trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return { ok: false, error: 'Arrangørens e-mail mangler eller er ugyldig — udfyld den på kontrakten først' };
+  }
+
+  const bookingId = _insertWithId('Bookings', 'bkg', function (newId) {
+    const now = new Date();
+    return {
+      id: newId, bookerId: '', source: 'band', status: 'sent',
+      contractDraft: JSON.stringify(contractDraft),
+      arrangoerName: arr.contactName || arr.name || '',
+      arrangoerEmail: email,
+      docHash: '', tokenExp: '', bandSignature: '', arrangoerSignature: '', declineReason: '',
+      contractId: contractId, pdfFileId: '',
+      history: JSON.stringify([{ ts: now.toISOString(), actor: me.email, from: '', to: 'sent', note: 'Oprettet af band — klar til godkendelse' }]),
+      createdAt: now, updatedAt: now
+    };
+  });
+  _updateRowById('Contracts', contractId, { status: 'afventer', updatedAt: new Date() });
+  _audit(me.email, 'booking-oprettet', CURRENT_BAND_ID, bookingId + ' (kontrakt ' + contractId + ')');
+  return { ok: true, bookingId: bookingId };
+}
+
+function actListIncomingBookings(p) {
+  _requireAdmin(p.email, p.passwordHash);
+  if (!_bookingEnabled(CURRENT_BAND_ID)) return { ok: true, bookings: [] };
+  const out = _readAll('Bookings').map(_parseBookingJson);
+  out.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+  return { ok: true, bookings: out };
+}
+
+function actApproveAndSignBooking(p) {
+  const me = _requireAdmin(p.email, p.passwordHash);
+  if (!_bookingEnabled(CURRENT_BAND_ID)) return { ok: false, error: 'Booking & e-signatur er ikke aktiveret for dette band' };
+  const bookingId = String(p.bookingId || '').trim();
+  const typedName = String(p.typedName || '').trim();
+  if (!bookingId) return { ok: false, error: 'bookingId mangler' };
+  if (!typedName) return { ok: false, error: 'Indtast dit navn for at underskrive' };
+
+  const row = _getBooking(bookingId);
+  if (!row) return { ok: false, error: 'Booking ikke fundet' };
+  if (p.expectedUpdatedAt && row.updatedAt && new Date(row.updatedAt).getTime() > new Date(p.expectedUpdatedAt).getTime()) {
+    return { ok: false, conflict: true, error: 'Denne booking er blevet ændret imens — genindlæs siden.' };
+  }
+  if (row.status !== 'sent') return { ok: false, error: 'Kan kun godkendes fra status "sendt"' };
+
+  const contractDraft = _parseJson(row.contractDraft) || {};
+  const docHash = _computeDocHash(contractDraft);
+  const ip = String(p.clientIp || '').trim();
+  const ua = String(p.userAgent || '').slice(0, 200);
+  const bandSignature = { name: typedName, email: me.email, ts: new Date().toISOString(), ip: ip, ua: ua, docHash: docHash };
+  const tokenInfo = _issueSigningToken(bookingId, CURRENT_BAND_ID, docHash);
+
+  const updated = _transitionBooking(bookingId, ['sent'], 'band_signed', me.email, 'Godkendt og underskrevet af band', {
+    docHash: docHash,
+    tokenExp: new Date(tokenInfo.exp).toISOString(),
+    bandSignature: JSON.stringify(bandSignature)
+  });
+
+  // Fire-and-forget: en mislykket mail må aldrig fortryde en allerede gennemført underskrift.
+  try {
+    const cfg = getBandConfig();
+    const signUrl = _signingUrl(p.appOrigin, tokenInfo.token);
+    _sendMail({
+      to: row.arrangoerEmail,
+      subject: 'Kontrakt til underskrift — ' + (cfg.bandName || CURRENT_BAND_ID),
+      html: _buildSigningEmailHtml(cfg, contractDraft, signUrl),
+      text: 'Kontrakt til underskrift fra ' + (cfg.bandName || CURRENT_BAND_ID) + '. Åbn og underskriv her: ' + signUrl
+    });
+  } catch (e) { Logger.log('Kunne ikke sende signeringsmail: ' + e); }
+
+  return { ok: true, booking: updated };
+}
+
+function actDeclineBooking(p) {
+  const me = _requireAdmin(p.email, p.passwordHash);
+  if (!_bookingEnabled(CURRENT_BAND_ID)) return { ok: false, error: 'Booking & e-signatur er ikke aktiveret for dette band' };
+  const bookingId = String(p.bookingId || '').trim();
+  if (!bookingId) return { ok: false, error: 'bookingId mangler' };
+  const reason = String(p.reason || '').trim().slice(0, 500);
+  const updated = _transitionBooking(bookingId, ['sent'], 'band_declined', me.email, reason, { declineReason: reason });
+  return { ok: true, booking: updated };
+}
+
+function actCancelBooking(p) {
+  const me = _requireAdmin(p.email, p.passwordHash);
+  if (!_bookingEnabled(CURRENT_BAND_ID)) return { ok: false, error: 'Booking & e-signatur er ikke aktiveret for dette band' };
+  const bookingId = String(p.bookingId || '').trim();
+  if (!bookingId) return { ok: false, error: 'bookingId mangler' };
+  const updated = _transitionBooking(bookingId, ['sent', 'band_signed'], 'cancelled', me.email, String(p.reason || '').slice(0, 500));
+  return { ok: true, booking: updated };
+}
+
+function actResendSigningLink(p) {
+  const me = _requireAdmin(p.email, p.passwordHash);
+  if (!_bookingEnabled(CURRENT_BAND_ID)) return { ok: false, error: 'Booking & e-signatur er ikke aktiveret for dette band' };
+  const bookingId = String(p.bookingId || '').trim();
+  const row = _getBooking(bookingId);
+  if (!row) return { ok: false, error: 'Booking ikke fundet' };
+  if (row.status !== 'band_signed') return { ok: false, error: 'Kan kun gensendes når bandet har underskrevet og der afventes arrangøren' };
+  const tokenInfo = _issueSigningToken(bookingId, CURRENT_BAND_ID, row.docHash);
+  _updateRowById('Bookings', bookingId, { tokenExp: new Date(tokenInfo.exp).toISOString() });
+  _audit(me.email, 'booking-link-gensendt', CURRENT_BAND_ID, bookingId);
+  try {
+    const cfg = getBandConfig();
+    const contractDraft = _parseJson(row.contractDraft) || {};
+    const signUrl = _signingUrl(p.appOrigin, tokenInfo.token);
+    _sendMail({
+      to: row.arrangoerEmail,
+      subject: 'Påmindelse: Kontrakt til underskrift — ' + (cfg.bandName || CURRENT_BAND_ID),
+      html: _buildSigningEmailHtml(cfg, contractDraft, signUrl),
+      text: 'Påmindelse — kontrakt til underskrift: ' + signUrl
+    });
+  } catch (e) { Logger.log('Kunne ikke gensende signeringsmail: ' + e); }
+  return { ok: true };
+}
+
+// ─── Booking-actions: offentlig signeringsside (KUN token, intet login) ─────
+
+function actGetSignableBooking(p) {
+  const decoded = _decodeSigningToken(p.t);
+  if (!decoded) return { ok: false, error: 'Linket er ugyldigt eller udløbet.' };
+  CURRENT_BAND_ID = decoded.bandId;
+  let tenant;
+  try { tenant = _loadTenant(CURRENT_BAND_ID); } catch (e) { return { ok: false, error: 'Linket er ugyldigt eller udløbet.' }; }
+  if ((tenant.status || 'active') !== 'active' || !tenant.booking) return { ok: false, error: 'Linket er ugyldigt eller udløbet.' };
+  const row = _getBooking(decoded.bookingId);
+  if (!row || row.docHash !== decoded.docHash) return { ok: false, error: 'Linket er ugyldigt eller udløbet.' };
+  if (row.status === 'completed') return { ok: true, status: 'completed' };
+  if (row.status !== 'band_signed') return { ok: false, error: 'Denne kontrakt kan ikke længere underskrives.' };
+
+  const cfg = getBandConfig();
+  const contractDraft = _parseJson(row.contractDraft) || {};
+  const bandSignature = _parseJson(row.bandSignature);
+  const logoDataUrl = _cachedLogoDataUrl(cfg.logoFileId);
+  const fragment = _buildContractHtmlServer(contractDraft, cfg, logoDataUrl, { band: bandSignature, arrangoer: null }, row.docHash);
+  return { ok: true, status: 'band_signed', html: fragment, bandName: cfg.bandName || '', venueName: (contractDraft.venue && contractDraft.venue.name) || '' };
+}
+
+function actSubmitArrangoerSignature(p) {
+  const decoded = _decodeSigningToken(p.t);
+  if (!decoded) return { ok: false, error: 'Linket er ugyldigt eller udløbet.' };
+  CURRENT_BAND_ID = decoded.bandId;
+  const typedName = String(p.typedName || '').trim();
+  if (!typedName) return { ok: false, error: 'Indtast dit navn for at underskrive.' };
+  let tenant;
+  try { tenant = _loadTenant(CURRENT_BAND_ID); } catch (e) { return { ok: false, error: 'Linket er ugyldigt eller udløbet.' }; }
+  if ((tenant.status || 'active') !== 'active' || !tenant.booking) return { ok: false, error: 'Linket er ugyldigt eller udløbet.' };
+
+  const preRow = _getBooking(decoded.bookingId);
+  if (!preRow || preRow.docHash !== decoded.docHash) return { ok: false, error: 'Linket er ugyldigt eller udløbet.' };
+  if (preRow.status === 'completed') return { ok: false, error: 'Denne kontrakt er allerede underskrevet.' };
+  if (preRow.status !== 'band_signed') return { ok: false, error: 'Denne kontrakt kan ikke længere underskrives.' };
+
+  const ip = String(p.clientIp || '').trim();
+  const ua = String(p.userAgent || '').slice(0, 200);
+
+  // Underskrift + kontrakt-konvertering + PDF-arkivering sker ATOMART under samme
+  // lås som transitionen, så der aldrig kan opstå en "underskrevet men ingen
+  // godkendt kontrakt"-tilstand ved samtidige/gentagne kald.
+  const result = _withLock(function () {
+    const fresh = _getBooking(decoded.bookingId);
+    if (!fresh || fresh.status !== 'band_signed') throw _userError('Denne kontrakt er allerede underskrevet eller ikke længere tilgængelig.');
+    const contractDraft = _parseJson(fresh.contractDraft) || {};
+    const bandSignature = _parseJson(fresh.bandSignature);
+    const arrangoerSignature = { name: typedName, ts: new Date().toISOString(), ip: ip, ua: ua, docHash: fresh.docHash };
+    const now = new Date();
+
+    // Fase A: kontrakten findes allerede (oprettet af "Send til underskrift") —
+    // flip status i stedet for at oprette en ny række. Fase B/C (booker-tilbud
+    // uden en forudgående kontrakt) vil skulle oprette en NY Contracts-række her —
+    // ikke implementeret endnu, da source altid er 'band' i Fase A.
+    const finalContractId = fresh.contractId || '';
+    if (finalContractId) {
+      _updateRowById('Contracts', finalContractId, { status: 'godkendt', updatedAt: now });
+    }
+
+    let archivedPdfId = '';
+    try {
+      const cfg = getBandConfig();
+      const logoDataUrl = _cachedLogoDataUrl(cfg.logoFileId);
+      const fragment = _buildContractHtmlServer(contractDraft, cfg, logoDataUrl, { band: bandSignature, arrangoer: arrangoerSignature }, fresh.docHash);
+      const pdfBlob = _htmlToPdfBlob(_wrapHtmlDocument(fragment), 'Kontrakt-' + (finalContractId || fresh.id));
+      if (pdfBlob) {
+        const year = contractDraft.date ? new Date(contractDraft.date).getFullYear() : now.getFullYear();
+        const folder = _getContractArchiveFolder(year);
+        const file = folder.createFile(pdfBlob);
+        _lockdownFile(file);
+        archivedPdfId = file.getId();
+      }
+    } catch (e) { Logger.log('Kunne ikke arkivere underskrevet kontrakt-PDF: ' + e); }
+
+    const history = _parseJson(fresh.history) || [];
+    history.push({ ts: now.toISOString(), actor: typedName, from: 'band_signed', to: 'completed', note: 'Underskrevet af arrangør' });
+    _updateRowById('Bookings', decoded.bookingId, {
+      status: 'completed', arrangoerSignature: JSON.stringify(arrangoerSignature),
+      pdfFileId: archivedPdfId, history: JSON.stringify(history), updatedAt: now
+    });
+    _audit(typedName + ' (arrangør, uden login)', 'booking-completed', CURRENT_BAND_ID,
+      decoded.bookingId + (finalContractId ? ' → kontrakt ' + finalContractId : '') + ' · IP ' + ip + ' · dok ' + String(fresh.docHash || '').slice(0, 12));
+
+    return { pdfFileId: archivedPdfId, finalContractId: finalContractId, arrangoerEmail: fresh.arrangoerEmail };
+  });
+
+  // Notifikationer — uden for låsen; en mislykket mail fortryder aldrig underskriften.
+  try {
+    const cfg = getBandConfig();
+    const adminTo = _adminEmails().join(',');
+    if (adminTo) {
+      _sendMail({
+        to: adminTo,
+        subject: 'Kontrakt underskrevet af arrangør — ' + (cfg.bandName || CURRENT_BAND_ID),
+        html: '<p>' + _escHtmlSrv(typedName) + ' har underskrevet kontrakten' + (result.finalContractId ? ' (kontrakt ' + _escHtmlSrv(result.finalContractId) + ')' : '') + '.</p>',
+        text: typedName + ' har underskrevet kontrakten.',
+        attachmentFileId: result.pdfFileId || undefined
+      });
+    }
+    _sendMail({
+      to: result.arrangoerEmail,
+      subject: 'Kontrakt underskrevet — ' + (cfg.bandName || CURRENT_BAND_ID),
+      html: '<p>Tak — kontrakten er nu underskrevet af begge parter. Kvitteringen er vedhæftet som PDF.</p>',
+      text: 'Kontrakten er underskrevet af begge parter. Se vedhæftet PDF.',
+      attachmentFileId: result.pdfFileId || undefined
+    });
+  } catch (e) { Logger.log('Kunne ikke sende kvitteringsmail(er): ' + e); }
+
+  return { ok: true, contractId: result.finalContractId };
+}
+
+function actDeclineByArrangoer(p) {
+  const decoded = _decodeSigningToken(p.t);
+  if (!decoded) return { ok: false, error: 'Linket er ugyldigt eller udløbet.' };
+  CURRENT_BAND_ID = decoded.bandId;
+  let tenant;
+  try { tenant = _loadTenant(CURRENT_BAND_ID); } catch (e) { return { ok: false, error: 'Linket er ugyldigt eller udløbet.' }; }
+  if ((tenant.status || 'active') !== 'active' || !tenant.booking) return { ok: false, error: 'Linket er ugyldigt eller udløbet.' };
+  const row = _getBooking(decoded.bookingId);
+  if (!row || row.docHash !== decoded.docHash) return { ok: false, error: 'Linket er ugyldigt eller udløbet.' };
+  if (row.status !== 'band_signed') return { ok: false, error: 'Denne handling kan ikke udføres længere.' };
+  const reason = String(p.reason || '').trim().slice(0, 500);
+  _transitionBooking(decoded.bookingId, ['band_signed'], 'arr_declined', 'arrangør (uden login)', reason, { declineReason: reason });
+  try {
+    const cfg = getBandConfig();
+    const adminTo = _adminEmails().join(',');
+    if (adminTo) {
+      _sendMail({
+        to: adminTo,
+        subject: 'Kontrakt afvist af arrangør — ' + (cfg.bandName || CURRENT_BAND_ID),
+        html: '<p>Arrangøren har afvist kontrakten.' + (reason ? ' Begrundelse: ' + _escHtmlSrv(reason) : '') + '</p>',
+        text: 'Arrangøren har afvist kontrakten.' + (reason ? ' Begrundelse: ' + reason : '')
+      });
+    }
+  } catch (e) { Logger.log('Kunne ikke sende afvisnings-notifikation: ' + e); }
+  return { ok: true };
+}
+
 // ─── Public boot config + rider ─────────────────────────────────────────────
 
 /**
@@ -2557,7 +3140,15 @@ function actGetConfig(p) {
   pub.hasSceneplan = !!String(cfg.sceneplanFileId || '').trim();
   // Betalt feature: tværgående jobs/honorar slået til for dette band af operatøren.
   try { pub.crossBand = !!_loadTenant(CURRENT_BAND_ID).crossBand; } catch (e) { pub.crossBand = false; }
+  // Booking & e-signatur: feature-flag operatøren slår til pr. band. Styrer om
+  // "Send til underskrift"/indgående-tilbud-UI'et vises i det hele taget.
+  pub.booking = _bookingEnabled(CURRENT_BAND_ID);
   return { ok: true, config: pub };
+}
+
+/** Er booking/e-signatur slået til for dette band? Fejler lukket (false) ved ukendt band. */
+function _bookingEnabled(bandId) {
+  try { return !!_loadTenant(bandId).booking; } catch (e) { return false; }
 }
 
 /**
@@ -2974,6 +3565,13 @@ function actUpdateTenant(p) {
   if (p.crossBand !== undefined) {
     data.crossBand = (p.crossBand === true || p.crossBand === 'true' || p.crossBand === 1 || p.crossBand === '1');
     _audit(_operatorActor(p), data.crossBand ? 'crossband-slaaet-til' : 'crossband-slaaet-fra', bandId, '');
+  }
+  // Booking & e-signatur (fase A): feature-flag der styrer ALT booking-relateret —
+  // gates server-side i hver booking-action, ikke kun i UI'et. Slukkes den midt i
+  // et signeringsforløb, holder udestående links op med at virke.
+  if (p.booking !== undefined) {
+    data.booking = (p.booking === true || p.booking === 'true' || p.booking === 1 || p.booking === '1');
+    _audit(_operatorActor(p), data.booking ? 'booking-slaaet-til' : 'booking-slaaet-fra', bandId, '');
   }
   props.setProperty(key, JSON.stringify(data));
   if (p.bandName) _audit(_operatorActor(p), 'band-omdoebt', bandId, '→ ' + p.bandName);

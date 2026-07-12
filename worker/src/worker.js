@@ -14,6 +14,14 @@ export default {
       if (url.pathname === '/api/change-password') return withSecHeaders(await apiChangePassword(request, env));
       if (url.pathname === '/api/call')            return withSecHeaders(await apiCall(request, env));
       if (url.pathname === '/api/faktura-pdf')     return withSecHeaders(await apiFakturaPdf(request, env, url));
+      if (url.pathname === '/api/sign')            return withSecHeaders(await apiSign(request, env));
+      // Offentlig signeringsside (Booking Fase A) — ingen login. Eksplicit rute i
+      // stedet for at stole på extension-less asset-serving, så /sign altid rammer
+      // sign.html uanset Wrangler-assets' html_handling-konfiguration.
+      if (url.pathname === '/sign') {
+        const assetReq = new Request(new URL('/sign.html', request.url), request);
+        return withSecHeaders(await env.ASSETS.fetch(assetReq));
+      }
     } catch (e) {
       return withSecHeaders(json({ ok: false, error: 'Serverfejl i proxy' }, 500));
     }
@@ -32,8 +40,10 @@ function json(obj, status = 200, extraHeaders = {}) {
 }
 
 // Kald Apps Script server-til-server med det hemmelige token tilføjet.
+// NB: appToken sættes EFTER spread af body — ellers kunne en klient sende sit eget
+// appToken-felt og overskrive vores injicerede værdi (Object.assign: sidste vinder).
 async function callAppsScript(env, body) {
-  const payload = Object.assign({ appToken: env.APP_TOKEN }, body);
+  const payload = Object.assign({}, body, { appToken: env.APP_TOKEN });
   const res = await fetch(env.SCRIPT_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
@@ -194,10 +204,16 @@ async function apiCall(request, env) {
     return json({ ok: false, error: 'Ikke logget ind' }, 401);
   }
 
-  // Injicér credential/token server-side ud fra sessionen.
+  // Injicér credential/token + request-metadata server-side. clientIp/userAgent/
+  // appOrigin bruges af booking-actions (fx approveAndSignBooking) til signatur-
+  // registrering og til at bygge signeringslinket, uden at Apps Script behøver
+  // kende Worker'ens domæne. Sat EFTER spread af body, så en klient ikke kan forfalske dem.
   const inject = sess.data.kind === 'operator'
     ? { operatorToken: sess.data.operatorToken }
     : { email: sess.data.email, passwordHash: sess.data.passwordHash };
+  inject.clientIp = request.headers.get('CF-Connecting-IP') || '';
+  inject.userAgent = (request.headers.get('User-Agent') || '').slice(0, 200);
+  inject.appOrigin = new URL(request.url).origin;
 
   const d = await callAppsScript(env, Object.assign({}, body, inject));
   await saveSession(env, sess.sid, sess.data); // rullende fornyelse
@@ -251,6 +267,43 @@ async function apiFakturaPdf(request, env, url) {
 
 function escapeHtmlW(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// ─── Booking & e-signatur (Fase A): offentligt signerings-endpoint ─────────────
+// INGEN session — en arrangør uden login kender kun sit signeringstoken. Al auth
+// sker i Apps Script (_decodeSigningToken, HMAC-signeret, docHash-bundet).
+// Modsat login tælles her hvert kald (ikke kun fejl) mod rate-limiten: selv et
+// "view" koster en fuld Apps Script-eksekvering, og der er ingen legitim grund
+// til at mange forskellige tokens skulle blive tilgået fra samme IP i stor stil.
+async function apiSign(request, env) {
+  if (await ipRateLimited(request, env)) return json({ ok: false, error: 'For mange forsøg — prøv igen senere' }, 429);
+  await ipRateLimitPenalize(request, env);
+
+  let body;
+  try { body = await request.json(); } catch (e) { return json({ ok: false, error: 'Ugyldig request' }, 400); }
+  const t = String(body.t || '');
+  if (!t) return json({ ok: false, error: 'Linket er ugyldigt eller udløbet.' }, 400);
+
+  const payload = {
+    t,
+    clientIp: request.headers.get('CF-Connecting-IP') || '',
+    userAgent: (request.headers.get('User-Agent') || '').slice(0, 200)
+  };
+  const op = String(body.op || '');
+  if (op === 'view') {
+    payload.action = 'getSignableBooking';
+  } else if (op === 'sign') {
+    payload.action = 'submitArrangoerSignature';
+    payload.typedName = String(body.typedName || '').slice(0, 200);
+  } else if (op === 'decline') {
+    payload.action = 'declineByArrangoer';
+    payload.reason = String(body.reason || '').slice(0, 500);
+  } else {
+    return json({ ok: false, error: 'Ugyldig handling' }, 400);
+  }
+
+  const d = await callAppsScript(env, payload);
+  return json(d || { ok: false, error: 'Linket er ugyldigt eller udløbet.' });
 }
 
 // ─── Sikkerheds-headers + CSP på ALLE svar ──────────────────────────────────────

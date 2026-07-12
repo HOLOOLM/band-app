@@ -309,6 +309,7 @@ function drawContractEditor(){
       <div class="flex">
         <button class="btn btn-ghost" onclick="setAdminRoute('contracts')">← Tilbage</button>
         ${isNew ? '' : '<button class="btn btn-ghost" onclick="copyContract()">Kopier</button>'}
+        ${(!isNew && BAND_CONFIG.booking && EDITING.status !== 'godkendt') ? '<button class="btn btn-primary btn-sm" onclick="sendContractForSigning()">✎ Send til underskrift</button>' : ''}
         ${isNew ? '' : '<button class="btn btn-ghost btn-sm" onclick="downloadContractPDF()">↓ PDF med Rider</button>'}
         ${isNew ? '' : '<button class="btn btn-ghost btn-sm" onclick="downloadContractOverviewPDF()">↓ PDF uden Rider</button>'}
         ${isNew ? '' : '<button class="btn btn-ghost btn-sm" onclick="downloadFakturaPDF()">↓ Honorarafregning</button>'}
