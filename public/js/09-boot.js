@@ -264,14 +264,13 @@ function opUpdateSummary(){
   const el = document.getElementById('opSummary');
   if (!el) return;
   const loaded = OP_TENANTS.filter(t => OP_HEALTH[t.bandId] && !OP_HEALTH[t.bandId]._error);
-  let members = 0, gigs = 0, missing = 0;
-  loaded.forEach(t => { const h = OP_HEALTH[t.bandId]; members += h.members||0; gigs += h.upcomingGigs||0; if (opMissingSetup(h)) missing++; });
+  let members = 0, missing = 0;
+  loaded.forEach(t => { const h = OP_HEALTH[t.bandId]; members += h.members||0; if (opMissingSetup(h)) missing++; });
   const paused = OP_TENANTS.filter(t => t.status === 'suspended').length;
   const pending = OP_TENANTS.length - loaded.length;
   el.innerHTML = `<div class="card" style="padding:12px 16px">
     ${opChip(OP_TENANTS.length + ' bands', 'neutral')}
     ${opChip(members + ' medlemmer', 'neutral')}
-    ${opChip(gigs + ' kommende gigs', 'neutral')}
     ${paused ? opChip(paused + ' på pause', 'miss') : ''}
     ${missing ? opChip(missing + ' mangler opsætning', 'miss') : (pending ? '' : opChip('Alt opsat ✓', 'ok'))}
     ${pending ? `<span style="font-size:11px;color:var(--cream-mute)">henter ${pending}…</span>` : ''}
@@ -296,8 +295,7 @@ function opLoadHealth(){
 
 function opHealthBadges(h){
   if (!h || h._error) return '<span style="color:var(--danger)">Kunne ikke hente status</span>';
-  let out = opChip(h.members + ' medlem' + (h.members===1?'':'mer'), 'neutral')
-          + opChip(h.upcomingGigs + ' kommende gig' + (h.upcomingGigs===1?'':'s'), 'neutral');
+  let out = opChip(h.members + ' medlem' + (h.members===1?'':'mer'), 'neutral');
   if (h.nextGig){
     const d = new Date(h.nextGig);
     if (!isNaN(d.getTime())) out += opChip('Næste: ' + d.toLocaleDateString('da-DK',{day:'numeric',month:'short',year:'numeric'}), 'neutral');
@@ -549,6 +547,7 @@ function opBookerListHtml(){
           <div style="font-size:12px;color:var(--cream-mute);margin-top:6px">${bandNames.length ? 'Adgang: ' + bandNames.map(escapeHtml).join(', ') : 'Ingen bands tildelt endnu'}</div>
         </div>
         <div class="flex" style="gap:6px;flex-wrap:wrap;justify-content:flex-end">
+          <button class="btn btn-ghost btn-sm" onclick="opCopyBookerLoginLink()">Kopiér login-link</button>
           <button class="btn btn-ghost btn-sm" onclick="opRenderBookerForm('${escapeHtml(b.email)}')">Rediger</button>
           <button class="btn btn-text btn-sm" onclick="opResetBookerPw('${escapeHtml(b.email)}')">Nulstil kode</button>
           <button class="btn btn-text btn-sm" onclick="opDeleteBooker('${escapeHtml(b.email)}')">Slet</button>
@@ -556,6 +555,12 @@ function opBookerListHtml(){
       </div>
     </div>`;
   }).join('');
+}
+
+function opCopyBookerLoginLink(){
+  const url = location.origin + location.pathname + '?band=__booker';
+  if (navigator.clipboard) navigator.clipboard.writeText(url);
+  toast('Booker-login-link kopieret');
 }
 
 function opRenderBookerForm(email){
@@ -617,7 +622,10 @@ async function opSaveBooker(isNew, existing){
           <p style="color:var(--cream-mute);font-size:13px;margin:0 0 6px">Login: <strong>${escapeHtml(email)}</strong></p>
           <p style="color:var(--cream-mute);font-size:13px;margin:0 0 6px">Login-side: <span class="mono">${escapeHtml(location.origin + location.pathname + '?band=__booker')}</span></p>
           <p style="color:var(--cream-mute);font-size:13px;margin:0 0 18px">Midlertidig adgangskode: <strong class="mono">${escapeHtml(d.tempPassword)}</strong> — send den sikkert til bookeren, den vises ikke igen.</p>
-          <button class="btn btn-primary" onclick="opOpenBookers()">Til bookere</button>
+          <div class="flex" style="gap:8px">
+            <button class="btn btn-ghost" onclick="opCopyBookerLoginLink()">Kopiér login-link</button>
+            <button class="btn btn-primary" onclick="opOpenBookers()">Til bookere</button>
+          </div>
         </div>`);
       return;
     }
