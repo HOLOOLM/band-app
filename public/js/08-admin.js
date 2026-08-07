@@ -463,48 +463,6 @@ async function uploadInvoicePdf(invoiceId, invoiceNr){
   } catch(e){ toast('Fejl: '+(e.message||e), 'err'); }
 }
 
-function _legacyUploadInvoicePdfDisabled(invoiceId, invoiceNr){
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = 'application/pdf,.pdf';
-  input.style.display = 'none';
-  document.body.appendChild(input);
-
-  input.onchange = () => {
-    const file = input.files && input.files[0];
-    document.body.removeChild(input);
-    if (!file) return;
-    if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf'){
-      toast('Vælg venligst en PDF-fil','err');
-      return;
-    }
-    if (file.size > 9 * 1024 * 1024){
-      toast('Filen er for stor (>9 MB) — Apps Script-grænse','err');
-      return;
-    }
-    toast(`Uploader ${invoiceNr}…`);
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = String(reader.result || '');
-      const base64 = dataUrl.split(',')[1] || '';
-      apiPost('uploadInvoicePdf', { id: invoiceId, pdfBase64: base64 })
-        .then(d => {
-          if (d && d.ok){
-            cacheBust('invoices'); broadcastInvalidate(['invoices']);
-            toast(`Faktura ${invoiceNr} uploadet til Drive`);
-            renderInvoicesList();
-          } else {
-            toast('Fejl: ' + ((d && d.error) || 'ukendt'), 'err');
-          }
-        })
-        .catch(e => toast('Upload-fejl: ' + (e.message || e), 'err'));
-    };
-    reader.onerror = () => toast('Kunne ikke læse filen','err');
-    reader.readAsDataURL(file);
-  };
-  input.click();
-}
-
 async function deleteInvoice(id, nr){
   if (!confirm(`Slet honorarafregning ${nr}?\n\nDrive-filen flyttes til papirkurv og nummeret frigives — næste nye honorarafregning genbruger det første ledige nummer.`)) return;
   try {
