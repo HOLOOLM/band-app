@@ -27,8 +27,15 @@
 
 const SHEET_HEADERS = {
   Members: ['id', 'name', 'category', 'instrument', 'phone', 'email', 'regAccount', 'address', 'passwordHash', 'pwSalt', 'forcePasswordChange', 'role', 'createdAt'],
-  Contracts: ['id', 'type', 'status', 'arrangoer', 'venue', 'date', 'getIn', 'soundcheck', 'showtimeFrom', 'showtimeTo', 'sets', 'setMinutes', 'musicianCount', 'crewCount', 'guestCount', 'honorar', 'paymentTerms', 'paymentTermsOther', 'notes', 'createdAt', 'updatedAt'],
-  Attendances: ['id', 'contractId', 'memberId', 'share', 'status', 'confirmedAt', 'checkedInAt', 'startAddress', 'distanceKm', 'distanceOrigin'],
+  // memberNote = fri tekst fra admin til bandet om DETTE job (parkering, indgang,
+  // dresscode...). Vises KUN i medlemmets jobvisning — bevidst udeladt af
+  // kontrakt-PDF'en, signeringsdokumentet og iCal-feedet, modsat 'notes'
+  // ("Særlige aftaler") som er en del af selve kontrakten.
+  Contracts: ['id', 'type', 'status', 'arrangoer', 'venue', 'date', 'getIn', 'soundcheck', 'showtimeFrom', 'showtimeTo', 'sets', 'setMinutes', 'musicianCount', 'crewCount', 'guestCount', 'honorar', 'paymentTerms', 'paymentTermsOther', 'notes', 'memberNote', 'createdAt', 'updatedAt'],
+  // returnHome: ''|'true'|'false' — tomt betyder TIL (tur/retur er standard).
+  // distanceRoundTrip: hvad det cachede distanceKm faktisk dækker, så en ændring
+  // af hakket invaliderer cachen i stedet for at vise et forældet tal.
+  Attendances: ['id', 'contractId', 'memberId', 'share', 'status', 'confirmedAt', 'checkedInAt', 'startAddress', 'distanceKm', 'distanceOrigin', 'returnHome', 'distanceRoundTrip'],
   Riders: ['type', 'version', 'json'],
   LoginLog: ['timestamp', 'memberId', 'email', 'userAgent'],
   Invoices: ['id', 'contractId', 'invoiceNr', 'date', 'amount', 'status', 'driveFileId', 'driveUrl', 'createdAt', 'paidAt'],
@@ -458,23 +465,68 @@ function _venueAddress(c) {
 }
 
 /**
+ * Kører medlemmet hjem igen efter jobbet? Tomt felt = ja (tur/retur er standard),
+ * så rækker fra før feltet fandtes opfører sig som manageren forventer.
+ */
+function _wantsReturnHome(att) {
+  const v = att && att.returnHome;
+  if (v === '' || v == null) return true;
+  return !(v === false || v === 'false' || v === 0 || v === '0');
+}
+
+/**
+ * Beregner den samlede kørsel for ét job.
+ *
+ * Tre tilfælde:
+ *   1. Uden hjemtur          → origin → spillested (én vej).
+ *   2. Hjemtur, start hjemme → 2 × (hjem → spillested).
+ *   3. Hjemtur, start et andet sted → (A → spillested) + (spillested → hjem).
+ *
+ * Tilfælde 2 fordobler i stedet for at slå returruten op. Kørselsafstand er i
+ * praksis symmetrisk for samme adressepar, og Apps Scripts Maps-kvote er den
+ * knappe ressource her — vi sparer et opslag pr. medlem pr. job. Tilfælde 3
+ * KAN ikke fordobles: A→spillested og spillested→hjem er to forskellige ruter.
+ */
+function _calcTripKm(origin, venueAddr, homeAddr, returnHome) {
+  const out = _calcDistance(origin, venueAddr);
+  if (!out) return null;
+  if (!returnHome) return { km: out.km, outKm: out.km, backKm: '', roundTrip: false };
+
+  const startIsHome = !homeAddr || _normalizeAddr(homeAddr) === _normalizeAddr(origin);
+  if (startIsHome) {
+    return { km: Math.round(out.km * 2 * 10) / 10, outKm: out.km, backKm: out.km, roundTrip: true };
+  }
+  const back = _calcDistance(venueAddr, homeAddr);
+  // Returruten kunne ikke slås op — fald tilbage på udturen frem for at tabe
+  // hjemturen helt, og markér den stadig som tur/retur.
+  if (!back) return { km: Math.round(out.km * 2 * 10) / 10, outKm: out.km, backKm: out.km, roundTrip: true };
+  return { km: Math.round((out.km + back.km) * 10) / 10, outKm: out.km, backKm: back.km, roundTrip: true };
+}
+
+/**
  * Returnerer distance for attendance-rækken. Hvis ikke cached, beregnes og caches automatisk.
  * Manuel re-beregn (actRecalcJobDistance) bruges når brugeren skifter alternativ startadresse.
  */
 function _ensureDistance(att, contract, memberHomeAddress) {
+  _ensureJobExtrasColumns();
   const cachedOrigin = att.distanceOrigin || '';
   const cachedKm = (att.distanceKm !== '' && att.distanceKm != null) ? Number(att.distanceKm) : '';
   const desiredOrigin = att.startAddress || memberHomeAddress || '';
-  // Cache hit hvis vi har en km og den blev beregnet fra samme origin som vi vil bruge nu.
-  if (cachedKm !== '' && cachedOrigin && cachedOrigin === desiredOrigin) {
-    return { km: cachedKm, origin: cachedOrigin };
+  const wantRT = _wantsReturnHome(att);
+  const cachedRT = (att.distanceRoundTrip === true || att.distanceRoundTrip === 'true');
+  // Cache hit kræver både samme origin OG samme tur/retur-valg som det gemte tal
+  // blev beregnet med — ellers viser vi et km-tal der ikke matcher hakket.
+  if (cachedKm !== '' && cachedOrigin && cachedOrigin === desiredOrigin && cachedRT === wantRT) {
+    return { km: cachedKm, origin: cachedOrigin, roundTrip: cachedRT };
   }
   const venueAddr = _venueAddress(contract);
-  if (!venueAddr || !desiredOrigin) return { km: '', origin: desiredOrigin };
-  const r = _calcDistance(desiredOrigin, venueAddr);
-  if (!r) return { km: '', origin: desiredOrigin };
-  _updateRowById('Attendances', att.id, { distanceKm: r.km, distanceOrigin: desiredOrigin });
-  return { km: r.km, origin: desiredOrigin };
+  if (!venueAddr || !desiredOrigin) return { km: '', origin: desiredOrigin, roundTrip: wantRT };
+  const r = _calcTripKm(desiredOrigin, venueAddr, memberHomeAddress || '', wantRT);
+  if (!r) return { km: '', origin: desiredOrigin, roundTrip: wantRT };
+  _updateRowById('Attendances', att.id, {
+    distanceKm: r.km, distanceOrigin: desiredOrigin, distanceRoundTrip: r.roundTrip ? 'true' : 'false'
+  });
+  return { km: r.km, origin: desiredOrigin, roundTrip: r.roundTrip, outKm: r.outKm, backKm: r.backKm };
 }
 
 /**
@@ -484,12 +536,15 @@ function _ensureDistance(att, contract, memberHomeAddress) {
 function _forceCalcDistance(att, contract, memberHomeAddress) {
   const venueAddr = _venueAddress(contract);
   const origin = att.startAddress || memberHomeAddress || '';
+  const wantRT = _wantsReturnHome(att);
   if (!venueAddr) return { km: '', origin: origin, error: 'Spillested mangler adresse' };
   if (!origin) return { km: '', origin: '', error: 'Sæt din hjemmeadresse først' };
-  const r = _calcDistance(origin, venueAddr);
+  const r = _calcTripKm(origin, venueAddr, memberHomeAddress || '', wantRT);
   if (!r) return { km: '', origin: origin, error: 'Kunne ikke beregne rute — tjek at adresserne er korrekte' };
-  _updateRowById('Attendances', att.id, { distanceKm: r.km, distanceOrigin: origin });
-  return { km: r.km, origin: origin };
+  _updateRowById('Attendances', att.id, {
+    distanceKm: r.km, distanceOrigin: origin, distanceRoundTrip: r.roundTrip ? 'true' : 'false'
+  });
+  return { km: r.km, origin: origin, roundTrip: r.roundTrip, outKm: r.outKm, backKm: r.backKm };
 }
 
 // ─── Routing ────────────────────────────────────────────────────────────────
@@ -647,6 +702,7 @@ function handle(p) {
       case 'exportMyData':    result = actExportMyData(p); break;
       case 'updateJobStartAddress': result = actUpdateJobStartAddress(p); break;
       case 'recalcJobDistance': result = actRecalcJobDistance(p); break;
+      case 'updateJobReturnHome': result = actUpdateJobReturnHome(p); break;
       // Booking & e-signatur (Fase A) — kræver alle _bookingEnabled(bandId) indeni
       case 'sendContractForSigning': result = actSendContractForSigning(p); break;
       case 'listIncomingBookings':   result = actListIncomingBookings(p); break;
@@ -916,6 +972,31 @@ function _ensureColumn(name, col) {
   const sh = _getSheet(name);
   const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(String);
   if (headers.indexOf(col) === -1) sh.getRange(1, headers.length + 1).setValue(col);
+}
+
+/**
+ * Sikrer at kolonnerne til tur/retur-kørsel og jobnoten findes i DETTE bands ark.
+ *
+ * Nødvendigt fordi setupSheet() (og dermed _migrateAddMissingColumns) kun kører
+ * ved oprettelse af et band — eksisterende bands ville ellers mangle felterne.
+ * Og en manglende kolonne fejler TAVST: _updateRowById fletter kun nøgler der
+ * matcher en header, så et gemt hak ville forsvinde uden en fejlmeddelelse.
+ *
+ * Kaldes fra de to skrivestier. _COLS_ENSURED holder det til ét tjek pr.
+ * script-eksekvering (Apps Script-kørsler er kortlivede), så prisen er ét
+ * header-opslag i det første kald og nul bagefter.
+ */
+var _COLS_ENSURED = false;
+function _ensureJobExtrasColumns() {
+  if (_COLS_ENSURED) return;
+  try {
+    _ensureColumn('Attendances', 'returnHome');
+    _ensureColumn('Attendances', 'distanceRoundTrip');
+    _ensureColumn('Contracts', 'memberNote');
+    _COLS_ENSURED = true;
+  } catch (e) {
+    Logger.log('_ensureJobExtrasColumns fejlede (prøver igen næste kald): ' + e);
+  }
 }
 
 // ─── Booker-konti (Booking Fase B) ────────────────────────────────────────────
@@ -1501,7 +1582,7 @@ function _serializeContract(c) {
     guestCount: Number(c.guestCount) || 0,
     honorar: Number(c.honorar) || 0,
     paymentTerms: c.paymentTerms, paymentTermsOther: c.paymentTermsOther,
-    notes: c.notes, createdAt: c.createdAt, updatedAt: c.updatedAt
+    notes: c.notes, memberNote: c.memberNote || '', createdAt: c.createdAt, updatedAt: c.updatedAt
   };
 }
 
@@ -1788,6 +1869,7 @@ function actSaveContract(p) {
     }
   }
   const now = new Date();
+  _ensureJobExtrasColumns();
   const row = {
     id: providedId || '',   // tildeles atomart under _withLock nedenfor hvis ny
     type: data.type || 'Spillested',
@@ -1808,6 +1890,7 @@ function actSaveContract(p) {
     paymentTerms: data.paymentTerms || '',
     paymentTermsOther: data.paymentTermsOther || '',
     notes: data.notes || '',
+    memberNote: data.memberNote || '',
     updatedAt: now
   };
   // Hele gemningen (id-tildeling + kontrakt-skrivning + attendance-resync) er ÉN
@@ -1977,7 +2060,10 @@ function actGetJobs(p) {
         checkedInAt: a.checkedInAt,
         startAddress: a.startAddress || '',
         distanceKm: dist.km,
-        distanceOrigin: dist.origin
+        distanceOrigin: dist.origin,
+        returnHome: _wantsReturnHome(a),
+        // Kun et flag i listen — selve teksten hentes med jobdetaljen.
+        hasMemberNote: !!(rawContract && rawContract.memberNote)
       });
     });
   jobs.sort((a, b) => new Date(a.date) - new Date(b.date));
@@ -2024,6 +2110,9 @@ function actGetJob(p) {
       startAddress: att.startAddress || '',
       distanceKm: dist.km,
       distanceOrigin: dist.origin,
+      returnHome: _wantsReturnHome(att),
+      distanceOutKm: dist.outKm == null ? '' : dist.outKm,
+      distanceBackKm: dist.backKm == null ? '' : dist.backKm,
       homeAddress: me.address || ''
     }
   };
@@ -2051,8 +2140,26 @@ function actUpdateJobStartAddress(p) {
   const start = (p.startAddress || '').toString().trim();
   // Gem ny startadresse, tøm cache så næste re-beregn bruger ny origin.
   // Beregner IKKE automatisk — brugeren skal klikke "Beregn km".
-  _updateRowById('Attendances', att.id, { startAddress: start, distanceKm: '', distanceOrigin: '' });
+  _updateRowById('Attendances', att.id, { startAddress: start, distanceKm: '', distanceOrigin: '', distanceRoundTrip: '' });
   return { ok: true, startAddress: start, distanceKm: '', distanceOrigin: '' };
+}
+
+/**
+ * Slår "kører hjem igen" til/fra for ét job. Hakket er medlemmets eget valg
+ * (samme niveau som startAddress) og tømmer km-cachen, så det næste kald
+ * beregner turen forfra med det nye valg.
+ */
+function actUpdateJobReturnHome(p) {
+  const me = _verifyAuth(p.email, p.passwordHash);
+  if (!me) return { ok: false, error: 'Ikke logget ind' };
+  const att = _readAll('Attendances').find(a => String(a.id) === String(p.attendanceId));
+  if (!att || String(att.memberId) !== String(me.id)) return { ok: false, error: 'Job ikke fundet' };
+  const on = (p.returnHome === true || p.returnHome === 'true');
+  _ensureJobExtrasColumns();
+  _updateRowById('Attendances', att.id, {
+    returnHome: on ? 'true' : 'false', distanceKm: '', distanceOrigin: '', distanceRoundTrip: ''
+  });
+  return { ok: true, returnHome: on };
 }
 
 function actRecalcJobDistance(p) {
@@ -3096,6 +3203,10 @@ function actSendContractForSigning(p) {
   if (activeBooking) return { ok: false, error: 'Der er allerede et aktivt underskriftsforløb for denne kontrakt' };
 
   const contractDraft = _serializeContract(row);
+  // memberNote er bandintern info til musikerne (parkering, "husk sort tøj",
+  // vurderinger af stedet). Den må ikke ind i booking-snapshottet: draften
+  // sendes videre til bookeren i _parseBookingJson og indgår i docHash.
+  delete contractDraft.memberNote;
   const arr = contractDraft.arrangoer || {};
   const email = String(arr.email || '').trim();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -4161,6 +4272,57 @@ function purgeOldLoginLogs() {
 function actRunRetentionNow(p) {
   _verifyAdminSignature(p);
   return { ok: true, summary: purgeOldLoginLogs() };
+}
+
+/**
+ * KØR ÉN GANG PR. BAND: sætter tur/retur-standarden på eksisterende deltagelser.
+ *
+ * Alle km beregnet før dette felt fandtes er ENVEJS. Derfor:
+ *   - Jobs i FORTIDEN får returnHome='false' + distanceRoundTrip='false'. Tallet
+ *     bliver stående som det er, og flaget kommer til at passe til det. Dermed
+ *     ændrer allerede afsendte/arkiverede honorarafregninger sig ikke.
+ *   - Jobs i FREMTIDEN (og uden dato) får returnHome='true' og får km-cachen
+ *     tømt, så næste visning beregner tur/retur.
+ *
+ * Idempotent: rører kun rækker hvor returnHome endnu er tom. Kør fra editoren
+ * med bandets CURRENT_BAND_ID sat — eller via _forEachBand hvis du har flere.
+ */
+function migrateReturnHomeDefaults_RUN_ME() {
+  // Kolonnerne SKAL findes før vi skriver: _updateRowById fletter kun felter der
+  // matcher en eksisterende header og dropper resten UDEN fejl.
+  _ensureJobExtrasColumns();
+
+  const atts = _readAll('Attendances');
+  const contracts = _readAll('Contracts');
+  const cMap = {};
+  contracts.forEach(c => { cMap[String(c.id)] = c; });
+
+  // Midnat i dag: et job i dag regnes som fremtidigt (det er ikke kørt endnu).
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  let past = 0, future = 0, skipped = 0;
+
+  atts.forEach(a => {
+    if (a.returnHome !== '' && a.returnHome != null) { skipped++; return; }
+    const c = cMap[String(a.contractId)];
+    const d = (c && c.date) ? new Date(c.date) : null;
+    const isPast = d && !isNaN(d.getTime()) && d < today;
+    if (isPast) {
+      _updateRowById('Attendances', a.id, { returnHome: 'false', distanceRoundTrip: 'false' });
+      past++;
+    } else {
+      _updateRowById('Attendances', a.id, {
+        returnHome: 'true', distanceKm: '', distanceOrigin: '', distanceRoundTrip: ''
+      });
+      future++;
+    }
+  });
+
+  const summary = 'Migrering færdig [' + (CURRENT_BAND_ID || '-') + ']: '
+    + past + ' tidligere jobs beholdt som envejs, '
+    + future + ' kommende jobs sat til tur/retur (km genberegnes ved næste visning), '
+    + skipped + ' rørt ikke (allerede sat).';
+  Logger.log(summary);
+  return summary;
 }
 
 /**

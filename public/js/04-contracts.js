@@ -293,7 +293,8 @@ function blankContract(){
     venue:{ name:'', address:'', postnr:'', city:'' },
     date:'', getIn:'', soundcheck:'', showtimeFrom:'', showtimeTo:'',
     sets:2, setMinutes:45, musicianCount:5, crewCount:1, guestCount:6,
-    honorar:0, paymentTerms:'Bankoverførsel 1 hverdag efter arrangementet', paymentTermsOther:'', notes:''
+    honorar:0, paymentTerms:'Bankoverførsel 1 hverdag efter arrangementet', paymentTermsOther:'', notes:'',
+    memberNote:''
   };
 }
 
@@ -440,6 +441,17 @@ function drawForm(){
       </div>
       <div class="eyebrow" style="margin-top:6px">Vælg medlemmer på dette job</div>
       <div class="attendees-grid" id="attendeesGrid">${renderAttendeesPicker()}</div>
+    `) +
+    sec('07', 'Info til bandet', `
+      <div class="rider-note" style="margin-bottom:12px">
+        Står IKKE i kontrakten. Vises kun for de musikere der er på jobbet — ikke for
+        arrangøren, ikke i PDF'en, ikke i signeringslinket.
+      </div>
+      <div class="field">
+        <label>Besked til besætningen (valgfri)</label>
+        <textarea class="textarea" data-bind="memberNote" rows="4"
+          placeholder="Fx: Parkering bag ved huset, indgang via scenedøren. Sort tøj. Mad kl. 18.">${escapeHtml(c.memberNote||'')}</textarea>
+      </div>
     `);
 
   // Bind type pill

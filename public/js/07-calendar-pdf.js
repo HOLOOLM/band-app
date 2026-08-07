@@ -161,6 +161,19 @@ function _kmLabel(km){
 }
 
 /**
+ * Forklarer i klartekst hvilken strækning km-tallet dækker. De tre tilfælde
+ * matcher _calcTripKm i Code.gs: envejs, tur/retur hjemmefra, og "fra et andet
+ * sted til spillestedet og derefter hjem" (to forskellige ruter lagt sammen).
+ */
+function _returnHomeHint(j){
+  const home = (j.homeAddress || (SESSION.member && SESSION.member.address) || '').trim();
+  if (j.returnHome === false) return 'Kun udturen tælles med.';
+  if (!j.startAddress) return 'Tur/retur fra din hjemmeadresse.';
+  if (!home) return 'Tur/retur — sæt din hjemmeadresse under Min profil for at få hjemturen beregnet præcist.';
+  return 'Fra ' + escapeHtml(j.startAddress) + ' til spillestedet og hjem til ' + escapeHtml(home) + '.';
+}
+
+/**
  * Bygger de to Google Maps-URL'er (embed-iframe + "åbn i Maps") for ét spillested.
  * Returnerer null hvis der ikke er nogen brugbar destination. Delt af
  * _venueMapIframe (første render) og _updateJobMap (skift af startadresse), så
@@ -272,6 +285,7 @@ function jobCardHtml(j){
         <div class="job-meta">${escapeHtml(city)} · ${escapeHtml(j.type||'')} · ${escapeHtml(j.showtimeFrom||'')}</div>
         <div class="job-share">Din andel: ${fmtMoney(j.share)}</div>
         <div class="job-km mono">↦ ${km ? escapeHtml(km) : '<span style="opacity:.6">— km</span>'}</div>
+        ${j.hasMemberNote ? '<div class="job-note-tag">ℹ Info til dette job</div>' : ''}
       </div>
       <div class="job-side">
         <div class="job-countdown-line">${escapeHtml(cd)}</div>
@@ -343,6 +357,13 @@ async function renderJobDetail(attId, bandId){
           <button class="btn btn-ghost btn-sm" id="jobKmRecalc" type="button">↻ Re-beregn</button>
           <div class="muted" style="font-size:12px;flex:1;min-width:150px">fra <span id="jobKmOrigin">${escapeHtml(j.distanceOrigin || j.startAddress || j.homeAddress || 'din hjemmeadresse')}</span></div>
         </div>
+        <label class="flex" style="gap:8px;align-items:flex-start;cursor:pointer;margin-top:4px">
+          <input type="checkbox" id="jobReturnHome" ${j.returnHome === false ? '' : 'checked'} style="width:auto;flex:none;margin-top:3px">
+          <span>
+            <span style="font-size:14px;color:var(--cream)">Jeg kører hjem igen bagefter</span>
+            <span class="muted" style="display:block;font-size:11px;margin-top:2px" id="jobReturnHomeHint">${_returnHomeHint(j)}</span>
+          </span>
+        </label>
         <div class="field" style="margin-top:10px">
           <label>Alternativ startadresse (valgfri)</label>
           <div style="display:flex;gap:8px">
@@ -352,6 +373,11 @@ async function renderJobDetail(attId, bandId){
           <div class="muted" style="font-size:11px;margin-top:4px">Brug hvis du kører fra et andet sted end hjemme den dag — km opdateres automatisk når du gemmer.</div>
         </div>
       </div>
+      ${c.memberNote ? `
+      <div class="card" style="margin-bottom:14px;border-color:color-mix(in srgb, var(--accent) 35%, var(--ink-line))">
+        <div class="eyebrow warm">Info til dette job</div>
+        <div style="white-space:pre-wrap;margin-top:8px;font-size:14px;line-height:1.6">${escapeHtml(c.memberNote)}</div>
+      </div>` : ''}
       <div class="card" style="margin-bottom:14px">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
           <div class="eyebrow warm">Besætning</div>
@@ -373,6 +399,8 @@ async function renderJobDetail(attId, bandId){
         MEMBER_JOB.startAddress = r.startAddress;
         MEMBER_JOB.distanceKm = '';
         MEMBER_JOB.distanceOrigin = '';
+        const hintEl = document.getElementById('jobReturnHomeHint');
+        if (hintEl) hintEl.textContent = _returnHomeHint(MEMBER_JOB);
         const newOrigin = r.startAddress || (SESSION.member && SESSION.member.address) || '';
         document.getElementById('jobKmOrigin').textContent = newOrigin || 'din hjemmeadresse';
         _updateJobMap(MEMBER_JOB.contract && MEMBER_JOB.contract.venue, newOrigin);
@@ -391,6 +419,40 @@ async function renderJobDetail(attId, bandId){
       finally { saveBtn.disabled = false; saveBtn.textContent = 'Gem & beregn'; }
     };
     attachDawaAutocomplete(document.getElementById('jobStartAddr'));
+    // Tur/retur-hakket gemmes og genberegner km med det samme. Ved fejl rulles
+    // hakket tilbage, så UI'et ikke påstår et valg der ikke blev gemt.
+    const rtBox = document.getElementById('jobReturnHome');
+    if (rtBox) rtBox.onchange = async ()=>{
+      const on = rtBox.checked;
+      rtBox.disabled = true;
+      const kmEl = document.getElementById('jobKmDisplay');
+      const hintEl = document.getElementById('jobReturnHomeHint');
+      if (kmEl) kmEl.textContent = '…';
+      try {
+        const r = await apiPost('updateJobReturnHome', { attendanceId: MEMBER_JOB.attendanceId, returnHome: on });
+        if (!r.ok) throw new Error(r.error || 'Kunne ikke gemme');
+        MEMBER_JOB.returnHome = on;
+        if (hintEl) hintEl.textContent = _returnHomeHint(MEMBER_JOB);
+        const calc = await apiPost('recalcJobDistance', { attendanceId: MEMBER_JOB.attendanceId });
+        if (calc.ok){
+          MEMBER_JOB.distanceKm = calc.distanceKm;
+          MEMBER_JOB.distanceOrigin = calc.distanceOrigin;
+          if (kmEl) kmEl.textContent = _kmLabel(calc.distanceKm) || '—';
+          MEMBER_JOBS_CACHE = null; MEMBER_JOBS_CACHE_ALL = null;
+          toast(on ? 'Tur/retur — km: ' + (_kmLabel(calc.distanceKm)||'—')
+                   : 'Kun udtur — km: ' + (_kmLabel(calc.distanceKm)||'—'));
+        } else {
+          if (kmEl) kmEl.textContent = '—';
+          toast(calc.error || 'Kunne ikke beregne km', 'err');
+        }
+      } catch(e){
+        rtBox.checked = !on;                       // rul tilbage — intet blev gemt
+        MEMBER_JOB.returnHome = !on;
+        if (hintEl) hintEl.textContent = _returnHomeHint(MEMBER_JOB);
+        if (kmEl) kmEl.textContent = _kmLabel(MEMBER_JOB.distanceKm) || '—';
+        toast(e.message || String(e), 'err');
+      } finally { rtBox.disabled = false; }
+    };
     const recalcBtn = document.getElementById('jobKmRecalc');
     if (recalcBtn) recalcBtn.onclick = async ()=>{
       if (recalcBtn.disabled) return;

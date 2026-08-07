@@ -249,6 +249,7 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .job-card-archived{opacity:.55}
 .job-card-archived:hover{opacity:.85}
 .job-archived-tag{display:inline-block;font-family:var(--font-mono);font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--cream-mute);background:rgba(255,255,255,.06);border:1px solid var(--ink-line-soft);padding:2px 6px;border-radius:10px;margin-left:8px;vertical-align:middle}
+.job-note-tag{display:inline-block;margin-top:6px;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--accent);background:color-mix(in srgb, var(--accent) 10%, transparent);border:1px solid color-mix(in srgb, var(--accent) 30%, transparent);padding:2px 8px;border-radius:99px}
 .job-filter-row{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap}
 .job-filter-pill{font-family:var(--font-mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;padding:6px 12px;border-radius:999px;border:1px solid var(--ink-line);background:transparent;color:var(--cream-mute);cursor:pointer;transition:all 120ms}
 .job-filter-pill:hover{color:var(--cream);border-color:var(--ink-line-strong)}
