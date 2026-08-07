@@ -335,12 +335,20 @@ function withSecHeaders(res) {
   const h = new Headers(res.headers);
   h.set('Content-Security-Policy', [
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline'",          // inline onclick-handlere bruges i appen (stram til senere)
+    // pdf.js hentes fra cdnjs af _loadPdfJs (04-contracts.js) til rider-preview.
+    "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com",  // inline onclick-handlere bruges i appen (stram til senere)
+    // pdf.js' GlobalWorkerOptions.workerSrc peger på samme cdnjs-URL; nogle
+    // versioner falder tilbage på en blob:-worker, så begge skal tillades.
+    "worker-src 'self' blob: https://cdnjs.cloudflare.com",
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' https://fonts.gstatic.com",
     "img-src 'self' data:",                         // logo serveres som data: URL
-    // Adresse-autocomplete (07-calendar-pdf.js) kalder dataforsyningen.dk direkte.
-    "connect-src 'self' https://api.dataforsyningen.dk",
+    // Adresse-autocomplete (07-calendar-pdf.js) kalder dataforsyningen.dk direkte;
+    // pdf.js henter sin worker-fil over fetch inden den starter workeren.
+    "connect-src 'self' https://api.dataforsyningen.dk https://cdnjs.cloudflare.com",
+    // Kort/rute på jobkortet indlejres som Google Maps-iframe (_venueMapIframe i
+    // 07-calendar-pdf.js). Uden denne falder den tilbage på default-src 'self'.
+    "frame-src https://www.google.com",
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'"
