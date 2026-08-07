@@ -982,20 +982,23 @@ function _ensureColumn(name, col) {
  * Og en manglende kolonne fejler TAVST: _updateRowById fletter kun nøgler der
  * matcher en header, så et gemt hak ville forsvinde uden en fejlmeddelelse.
  *
- * Kaldes fra de to skrivestier. _COLS_ENSURED holder det til ét tjek pr.
- * script-eksekvering (Apps Script-kørsler er kortlivede), så prisen er ét
- * header-opslag i det første kald og nul bagefter.
+ * Kaldes fra skrivestierne. Resultatet huskes PR. BAND for resten af
+ * eksekveringen — ikke som ét globalt flag: _forEachCrossBand skifter
+ * CURRENT_BAND_ID midt i en request, og et globalt flag ville få alle bands
+ * efter det første til at springe tjekket over. Prisen er ét header-opslag pr.
+ * band pr. kørsel og nul bagefter.
  */
-var _COLS_ENSURED = false;
+var _COLS_ENSURED = {};
 function _ensureJobExtrasColumns() {
-  if (_COLS_ENSURED) return;
+  const band = CURRENT_BAND_ID || '-';
+  if (_COLS_ENSURED[band]) return;
   try {
     _ensureColumn('Attendances', 'returnHome');
     _ensureColumn('Attendances', 'distanceRoundTrip');
     _ensureColumn('Contracts', 'memberNote');
-    _COLS_ENSURED = true;
+    _COLS_ENSURED[band] = true;
   } catch (e) {
-    Logger.log('_ensureJobExtrasColumns fejlede (prøver igen næste kald): ' + e);
+    Logger.log('_ensureJobExtrasColumns fejlede for ' + band + ' (prøver igen næste kald): ' + e);
   }
 }
 
@@ -4284,13 +4287,32 @@ function actRunRetentionNow(p) {
  *   - Jobs i FREMTIDEN (og uden dato) får returnHome='true' og får km-cachen
  *     tømt, så næste visning beregner tur/retur.
  *
- * Idempotent: rører kun rækker hvor returnHome endnu er tom. Kør fra editoren
- * med bandets CURRENT_BAND_ID sat — eller via _forEachBand hvis du har flere.
+ * Idempotent: rører kun rækker hvor returnHome endnu er tom, så den er sikker at
+ * køre flere gange. Kør den ÉN gang fra editoren — den looper selv over ALLE
+ * bands (samme mønster som migrateDriveFoldersToPerBand), fordi CURRENT_BAND_ID
+ * kun sættes pr. request af handle() og derfor er tom når man kører fra editoren.
  */
 function migrateReturnHomeDefaults_RUN_ME() {
+  const lines = [];
+  _listTenants().forEach(function (t) {
+    CURRENT_BAND_ID = t.bandId;
+    try {
+      lines.push(_migrateReturnHomeForCurrentBand());
+    } catch (e) {
+      lines.push(t.bandId + ': SPRUNGET OVER — ' + e);
+    }
+  });
+  CURRENT_BAND_ID = '';
+  const out = lines.length ? lines.join('\n') : 'Ingen bands fundet.';
+  Logger.log(out);
+  return out;
+}
+
+/** Selve migreringen for det band CURRENT_BAND_ID peger på. */
+function _migrateReturnHomeForCurrentBand() {
   // Kolonnerne SKAL findes før vi skriver: _updateRowById fletter kun felter der
   // matcher en eksisterende header og dropper resten UDEN fejl.
-  _ensureJobExtrasColumns();
+  _ensureJobExtrasColumns();     // cachen er pr. band, så hvert ark tjekkes selv
 
   const atts = _readAll('Attendances');
   const contracts = _readAll('Contracts');
@@ -4317,12 +4339,9 @@ function migrateReturnHomeDefaults_RUN_ME() {
     }
   });
 
-  const summary = 'Migrering færdig [' + (CURRENT_BAND_ID || '-') + ']: '
-    + past + ' tidligere jobs beholdt som envejs, '
-    + future + ' kommende jobs sat til tur/retur (km genberegnes ved næste visning), '
-    + skipped + ' rørt ikke (allerede sat).';
-  Logger.log(summary);
-  return summary;
+  return CURRENT_BAND_ID + ': ' + past + ' tidligere (envejs bevaret), '
+    + future + ' kommende (tur/retur, km genberegnes), '
+    + skipped + ' urørt.';
 }
 
 /**
