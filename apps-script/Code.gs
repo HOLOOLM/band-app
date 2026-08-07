@@ -638,7 +638,6 @@ function handle(p) {
       case 'getHonorarAdmin': result = actGetHonorarAdmin(p); break;
       case 'getDashboard':    result = actGetDashboard(p); break;
       case 'createInvoice':   result = actCreateInvoice(p); break;
-      case 'uploadInvoicePdf': result = actUploadInvoicePdf(p); break;
       case 'getInvoices':     result = actGetInvoices(p); break;
       case 'updateInvoiceStatus': result = actUpdateInvoiceStatus(p); break;
       case 'deleteInvoice':   result = actDeleteInvoice(p); break;
@@ -2354,60 +2353,6 @@ function actCreateInvoice(p) {
     sh.appendRow(headers.map(h => inv[h] != null ? inv[h] : ''));
   });
   return { ok: true, invoice: inv, reused: false };
-}
-
-function actUploadInvoicePdf(p) {
-  _requireAdmin(p.email, p.passwordHash);
-  if (!p.id) return { ok: false, error: 'id mangler' };
-  if (!p.pdfBase64) return { ok: false, error: 'pdfBase64 mangler' };
-
-  const inv = _readAll('Invoices').find(x => String(x.id) === String(p.id));
-  if (!inv) return { ok: false, error: 'Faktura ikke fundet' };
-
-  const c = _readAll('Contracts').find(x => String(x.id) === String(inv.contractId));
-  const dateObj = inv.date ? new Date(inv.date) : new Date();
-  const year = dateObj.getFullYear();
-  const fileName = 'Faktura ' + inv.invoiceNr + ' — ' + ((c && c.venue && c.venue.name) || inv.contractId);
-  const folder = _getInvoiceFolder(year);
-
-  // Trash gammel Drive-fil
-  let trashWarning = null;
-  if (inv.driveFileId) {
-    try { DriveApp.getFileById(inv.driveFileId).setTrashed(true); }
-    catch (e) {
-      console.error('uploadInvoicePdf: kunne ikke trashe Drive-fil ' + inv.driveFileId + ': ' + e);
-      trashWarning = 'Den gamle Drive-fil kunne ikke fjernes — der kan ligge en forældet kopi i Drive.';
-    }
-  }
-
-  let file;
-  try {
-    const bytes = Utilities.base64Decode(String(p.pdfBase64));
-    const pdfBlob = Utilities.newBlob(bytes, 'application/pdf', fileName + '.pdf');
-    file = folder.createFile(pdfBlob);
-    _lockdownFile(file);
-  } catch (err) {
-    console.error('actUploadInvoicePdf: Drive-fejl [' + (CURRENT_BAND_ID || '-') + ']: ' + (err && err.stack || err));
-    return { ok: false, error: 'Kunne ikke gemme PDF på Drive. Prøv igen — fejlen er logget.' };
-  }
-
-  const sh = SpreadsheetApp.openById(_getSheetId()).getSheetByName('Invoices');
-  const data = sh.getDataRange().getValues();
-  const headers = data[0];
-  const idCol = _colIndexOrThrow(headers, 'id');
-  const fileIdCol = _colIndexOrThrow(headers, 'driveFileId');
-  const urlCol = _colIndexOrThrow(headers, 'driveUrl');
-  for (let r = 1; r < data.length; r++) {
-    if (String(data[r][idCol]) === String(p.id)) {
-      sh.getRange(r + 1, fileIdCol + 1).setValue(file.getId());
-      sh.getRange(r + 1, urlCol + 1).setValue(file.getUrl());
-      break;
-    }
-  }
-
-  const res = { ok: true, driveFileId: file.getId(), driveUrl: file.getUrl() };
-  if (trashWarning) res.warning = trashWarning;
-  return res;
 }
 
 function actDeleteInvoice(p) {
