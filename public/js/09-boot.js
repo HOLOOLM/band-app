@@ -1204,7 +1204,6 @@ function applyBranding(){
     el.textContent = (c.bandName || '') + (c.bandTagline ? ' · ' + c.bandTagline : '') + ' · Medlem';
   });
   document.querySelectorAll('[data-band-name]').forEach(el => { el.textContent = c.bandName || ''; });
-  document.querySelectorAll('[data-band-short]').forEach(el => { el.textContent = c.bandShortName || ''; });
 }
 
 function _showBootError(title, msg) {

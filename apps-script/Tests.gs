@@ -32,12 +32,6 @@ function _eq(name, actual, expected) {
   _ok(name, pass, 'forventet ' + JSON.stringify(expected) + ', fik ' + JSON.stringify(actual));
 }
 
-function _throws(name, fn) {
-  let threw = false;
-  try { fn(); } catch (e) { threw = true; }
-  _ok(name, threw, 'forventede at funktionen kastede en fejl');
-}
-
 function _report(label) {
   const passed = _TEST_RESULTS.filter(r => r.pass).length;
   const failed = _TEST_RESULTS.filter(r => !r.pass);
