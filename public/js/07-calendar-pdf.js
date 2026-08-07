@@ -160,19 +160,35 @@ function _kmLabel(km){
   return Number(km).toLocaleString('da-DK', { maximumFractionDigits: 1 }) + ' km';
 }
 
-function _venueMapIframe(venue, origin){
-  if (!venue) return '';
+/**
+ * Bygger de to Google Maps-URL'er (embed-iframe + "åbn i Maps") for ét spillested.
+ * Returnerer null hvis der ikke er nogen brugbar destination. Delt af
+ * _venueMapIframe (første render) og _updateJobMap (skift af startadresse), så
+ * de to veje ikke kan komme til at pege forskellige steder hen.
+ */
+function _venueMapUrls(venue, origin){
+  if (!venue) return null;
   const dest = [venue.address, [venue.postnr, venue.city].filter(Boolean).join(' ')].filter(Boolean).join(', ');
-  if (!dest) return '';
+  if (!dest) return null;
   const destEnc = encodeURIComponent(dest);
   const originStr = (origin||'').trim();
   // Vis rute hvis vi har en start-adresse, ellers blot pin på spillestedet
-  const src = originStr
-    ? `https://www.google.com/maps?saddr=${encodeURIComponent(originStr)}&daddr=${destEnc}&output=embed`
-    : `https://www.google.com/maps?q=${destEnc}&output=embed`;
-  const openUrl = originStr
-    ? `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(originStr)}&destination=${destEnc}`
-    : `https://www.google.com/maps?q=${destEnc}`;
+  return {
+    dest: dest,
+    originStr: originStr,
+    src: originStr
+      ? `https://www.google.com/maps?saddr=${encodeURIComponent(originStr)}&daddr=${destEnc}&output=embed`
+      : `https://www.google.com/maps?q=${destEnc}&output=embed`,
+    openUrl: originStr
+      ? `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(originStr)}&destination=${destEnc}`
+      : `https://www.google.com/maps?q=${destEnc}`
+  };
+}
+
+function _venueMapIframe(venue, origin){
+  const u = _venueMapUrls(venue, origin);
+  if (!u) return '';
+  const { src, openUrl, originStr, dest } = u;
   const label = originStr ? `Rute fra ${originStr} til ${dest}` : `Kort over ${dest}`;
   return `<div id="jobMapWrap" style="border-radius:var(--radius);overflow:hidden;border:1px solid var(--ink-line);margin-top:6px">
     <iframe id="jobMapIframe"
@@ -192,17 +208,11 @@ function _venueMapIframe(venue, origin){
 function _updateJobMap(venue, origin){
   const iframe = document.getElementById('jobMapIframe');
   const link = document.getElementById('jobMapOpen');
-  if (!iframe || !venue) return;
-  const dest = [venue.address, [venue.postnr, venue.city].filter(Boolean).join(' ')].filter(Boolean).join(', ');
-  if (!dest) return;
-  const destEnc = encodeURIComponent(dest);
-  const originStr = (origin||'').trim();
-  iframe.src = originStr
-    ? `https://www.google.com/maps?saddr=${encodeURIComponent(originStr)}&daddr=${destEnc}&output=embed`
-    : `https://www.google.com/maps?q=${destEnc}&output=embed`;
-  if (link) link.href = originStr
-    ? `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(originStr)}&destination=${destEnc}`
-    : `https://www.google.com/maps?q=${destEnc}`;
+  if (!iframe) return;
+  const u = _venueMapUrls(venue, origin);
+  if (!u) return;
+  iframe.src = u.src;
+  if (link) link.href = u.openUrl;
 }
 
 function _isJobArchived(j){
