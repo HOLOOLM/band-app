@@ -8,6 +8,7 @@ import { sha256hex, pwIterations, newPasswordFields } from '../lib/crypto.js';
 import { issueToken, authFingerprint, MEMBER_TOKEN_TTL_SEC } from '../lib/tokens.js';
 import { PUBLIC_CONFIG_KEYS, SETTINGS_DEFAULTS } from '../lib/settings-defaults.js';
 import { verifyMember, verifyMemberAndMaybeRehash, publicMember } from '../auth/verify.js';
+import { syncPasswordAcrossBands } from '../auth/identity.js';
 import { userError } from '../lib/errors.js';
 
 // Rate-limit: 5 fejlede forsøg pr. e-mail → 15 min. Uændret fra Code.gs:1604.
@@ -95,6 +96,7 @@ export async function refreshSession(ctx) {
  */
 export async function changePassword(ctx) {
   const { env, band, p } = ctx;
+  // ctx.bandId bruges til password-sync nedenfor.
   const email = String(p.email || '').toLowerCase().trim();
 
   const m = await verifyMember(env, band, email, p.oldHash);
@@ -112,6 +114,13 @@ export async function changePassword(ctx) {
   const pf = await newPasswordFields(nyHash, pwIterations(env));
   const r = await band.setMemberPassword(m.id, pf.passwordHash, pf.pwSalt, false);
   if (!r.ok) return { ok: false, error: 'Kunne ikke gemme adgangskoden.' };
+
+  // SSO: ét password gælder alle bands musikeren spiller i. Skrives ud til de
+  // øvrige, og den kanoniske hash lægges i master. Et delvist resultat må IKKE
+  // fejle handlingen — koden er skiftet her, og en fejl ville efterlade brugeren
+  // i tvivl om, om skiftet gik igennem. Se auth/identity.js for hvorfor
+  // relationen er vendt om i forhold til Apps Script-originalen.
+  await syncPasswordAcrossBands(env, email, pf, ctx.bandId);
 
   const opdateret = Object.assign({}, m, { passwordHash: pf.passwordHash, pwSalt: pf.pwSalt });
   return { ok: true, memberToken: await memberToken(env, email, opdateret) };

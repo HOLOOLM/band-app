@@ -10,6 +10,10 @@
 // sin gate, og routeren nægter at køre en action med ukendt auth-værdi.
 
 import { login, refreshSession, changePassword, trackLogin, getConfig } from './auth.js';
+import {
+  getMembers, saveMember, deleteMember, resetPassword,
+  memberUpdateProfile, exportMyData
+} from './members.js';
 
 // scope: hvilket lager action'en får udleveret
 //   'band'      → ctx.band er bandets DO-stub (kræver gyldigt bandId)
@@ -32,7 +36,17 @@ export const ACTIONS = {
   refreshSession: { scope: 'band', auth: 'public', fn: refreshSession },
   changePassword: { scope: 'band', auth: 'public', fn: changePassword },
   getConfig:      { scope: 'band', auth: 'public', fn: getConfig },
-  trackLogin:     { scope: 'band', auth: 'member', fn: trackLogin }
+  trackLogin:     { scope: 'band', auth: 'member', fn: trackLogin },
+
+  // ── Fase 3b ──────────────────────────────────────────────────────────────
+  // Bemærk skellet: alt der rører ANDRE medlemmer kræver admin, mens de to
+  // actions der kun rører kalderens egne data er 'member'.
+  getMembers:          { scope: 'band', auth: 'admin',  fn: getMembers },
+  saveMember:          { scope: 'band', auth: 'admin',  fn: saveMember },
+  deleteMember:        { scope: 'band', auth: 'admin',  fn: deleteMember },
+  resetPassword:       { scope: 'band', auth: 'admin',  fn: resetPassword },
+  memberUpdateProfile: { scope: 'band', auth: 'member', fn: memberUpdateProfile },
+  exportMyData:        { scope: 'band', auth: 'member', fn: exportMyData }
 };
 
 export const VALID_SCOPES = ['band', 'master', 'identity', 'none'];

@@ -214,6 +214,67 @@ export class BandDO extends DurableObject {
   }
 
   /**
+   * Sletter et medlem og alt hvad der hænger på det i én transaktion.
+   *
+   * Attendances SKAL med: en efterladt attendance-række ville pege på et
+   * medlem der ikke findes, og både honorarfordeling og dashboard summerer
+   * over dem. Login-log ryddes også — det er personhenførbart og har ingen
+   * værdi når kontoen er væk (GDPR-dataminimering).
+   */
+  async deleteMember(id) {
+    await this.#ready();
+    let fandtes = false;
+    this.ctx.storage.transactionSync(() => {
+      this.db.run('DELETE FROM members WHERE id = ?', String(id));
+      fandtes = this.db.changes() > 0;
+      if (fandtes) {
+        this.db.run('DELETE FROM attendances WHERE member_id = ?', String(id));
+        this.db.run('DELETE FROM sessions WHERE subject = ?', String(id));
+        this.db.run('DELETE FROM login_log WHERE member_id = ?', String(id));
+      }
+    });
+    return { ok: fandtes };
+  }
+
+  /**
+   * Alt personhenførbart om ét medlem, til GDPR-eksporten.
+   *
+   * Bemærk at contracts.member_note IKKE er med: det er admins interne note om
+   * jobbet, ikke medlemmets persondata, og den er også holdt ude af kontrakt-PDF
+   * og iCal-feedet.
+   */
+  async exportMemberData(memberId, email) {
+    await this.#ready();
+    const jobs = this.db.rows(
+      `SELECT a.contract_id, c.date, c.venue, a.share, a.status,
+              a.checked_in_at, a.distance_km, a.start_address
+         FROM attendances a
+         LEFT JOIN contracts c ON c.id = a.contract_id
+        WHERE a.member_id = ?
+        ORDER BY c.date DESC`,
+      String(memberId)
+    ).map(r => {
+      // venue er en JSON-streng, som i Sheets-modellen. Udpak de to felter
+      // eksporten viser, og fejl ikke på en korrupt værdi.
+      let venue = {};
+      try { venue = JSON.parse(r.venue || '{}') || {}; } catch (e) { venue = {}; }
+      return {
+        contractId: r.contractId, date: r.date || '',
+        venue: venue.name || '', city: venue.city || '',
+        share: r.share, status: r.status, checkedInAt: r.checkedInAt || '',
+        distanceKm: r.distanceKm || '', startAddress: r.startAddress || ''
+      };
+    });
+
+    const loginHistory = this.db.rows(
+      'SELECT ts, user_agent FROM login_log WHERE email = ? ORDER BY ts DESC',
+      String(email || '').toLowerCase().trim()
+    ).map(r => ({ timestamp: r.ts, userAgent: r.userAgent || '' }));
+
+    return { jobs, loginHistory };
+  }
+
+  /**
    * Sætter nyt password OG dræber alle sessioner for medlemmet i én transaktion.
    * De to hører sammen: efter et kodeskift skal udestående sessioner være døde,
    * og et halvt gennemført skift ville efterlade en session med gammel adgang.
