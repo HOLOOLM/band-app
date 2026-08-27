@@ -16,6 +16,7 @@
 
 import { pbkdf2, constTimeEq, pwIterations } from '../lib/crypto.js';
 import { jurisdictionActive, bandStub } from '../lib/addressing.js';
+import { backendDescription } from '../backend.js';
 
 const STEPS = [5000, 10000, 50000, 200000];
 const REPEATS = 5;
@@ -111,7 +112,10 @@ export async function diagBillig(env) {
     euJurisdiktion: jurisdictionActive(env),
     doLagerVirker: lagerOk,
     doSkemaVersion: skemaVersion,
-    pwIterations: pwIterations(env)
+    pwIterations: pwIterations(env),
+    // Hvilket datalag der er i brug. Det vigtigste enkelttal ved en omskiftning:
+    // står der "Apps Script", er det nye lag bygget men ikke i drift.
+    datalag: backendDescription(env)
   };
 }
 

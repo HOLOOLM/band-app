@@ -36,6 +36,17 @@ crons = ["0 2 * * *"]
 
 # Ikke-hemmelige variabler
 [vars]
+# OMSKIFTNING mellem datalag. Se worker/src/backend.js for hvorfor dette er et
+# flag og ikke et big bang: bandenes rigtige data ligger i Apps Scripts Google
+# Sheet, og et ubetinget skift ville vise dem en TOM app.
+#
+#   "sheets"          alle bands på Apps Script (nuværende, sikker standard)
+#   "do:dmdt"         KUN dmdt på Durable Objects, resten på Apps Script
+#   "do"              alle bands på Durable Objects
+#
+# Skift ét band ad gangen, og kun når bandets data er lagt ind i det nye lag.
+# Tilbagerulning er den samme ændring i modsat retning.
+BACKEND = "sheets"
 # Password-KDF. 10000 er verificeret i produktion 2026-08-27: et enkelt hash
 # ved 10.000 iterationer gennemføres uden at Cloudflare dræber requesten, altså
 # inden for gratisplanens 10 ms CPU. Det er samme styrke som Apps Script bruger

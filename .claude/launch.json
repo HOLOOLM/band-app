@@ -14,6 +14,13 @@
       "port": 8788
     },
     {
+      "name": "band-app-do",
+      "runtimeArgs": ["worker/dev.mjs", "--port", "8789",
+                      "--var", "SELFTEST:on", "--var", "BACKEND:do"],
+      "runtimeExecutable": "node",
+      "port": 8789
+    },
+    {
       "name": "rider-demo",
       "runtimeExecutable": "npx",
       "runtimeArgs": ["--yes", "http-server", ".", "-p", "8734", "-c-1"],

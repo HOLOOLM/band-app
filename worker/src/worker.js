@@ -13,6 +13,7 @@ import { diag, diagBillig, diagAuthorized, maalEtHash, iterFraUrl } from './do/d
 import { bandStub } from './lib/addressing.js';
 import { buildIcal } from './actions/crossband.js';
 import { scheduled as runScheduled } from './scheduled.js';
+import { usesDurableObjects, callDurableObjects, backendDescription } from './backend.js';
 
 export { BandDO, MasterDO };
 
@@ -112,6 +113,20 @@ function json(obj, status = 200, extraHeaders = {}) {
   });
 }
 
+/**
+ * Sender en action til det datalag bandet hører til.
+ *
+ * Det ene sted omskiftningen afgøres for de dedikerede auth-ruter. Se
+ * backend.js for hvorfor det er et flag pr. band og ikke et big bang.
+ */
+async function callBackend(env, request, body, bandId) {
+  if (usesDurableObjects(env, bandId) ||
+      (!bandId && String(env.BACKEND || '').startsWith('do'))) {
+    return callDurableObjects(env, request, body, null);
+  }
+  return callAppsScript(env, body);
+}
+
 // Kald Apps Script server-til-server med det hemmelige token tilføjet.
 // NB: appToken sættes EFTER spread af body — ellers kunne en klient sende sit eget
 // appToken-felt og overskrive vores injicerede værdi (Object.assign: sidste vinder).
@@ -183,7 +198,7 @@ async function apiLogin(request, env) {
 
   if (await ipRateLimited(request, env)) return json({ ok: false, error: 'For mange forsøg — prøv igen senere' }, 429);
 
-  const d = await callAppsScript(env, { action: 'login', email, passwordHash, bandId });
+  const d = await callBackend(env, request, { action: 'login', email, passwordHash, bandId }, bandId);
   if (!d || !d.ok) { await ipRateLimitPenalize(request, env); return json(d || { ok: false, error: 'Login mislykkedes' }); }
 
   // Gem det signerede medlems-token i stedet for password-hashet: hver senere
@@ -201,7 +216,7 @@ async function apiOperatorLogin(request, env) {
   const email = String(body.email || '').toLowerCase().trim();
   const passwordHash = String(body.passwordHash || '');
   if (await ipRateLimited(request, env)) return json({ ok: false, error: 'For mange forsøg — prøv igen senere' }, 429);
-  const d = await callAppsScript(env, { action: 'operatorLogin', email, passwordHash });
+  const d = await callBackend(env, request, { action: 'operatorLogin', email, passwordHash }, '');
   if (!d || !d.ok) { await ipRateLimitPenalize(request, env); return json(d || { ok: false, error: 'Login mislykkedes' }); }
 
   const sid = crypto.randomUUID();
@@ -218,7 +233,7 @@ async function apiBookerLogin(request, env) {
   const email = String(body.email || '').toLowerCase().trim();
   const passwordHash = String(body.passwordHash || '');
   if (await ipRateLimited(request, env)) return json({ ok: false, error: 'For mange forsøg — prøv igen senere' }, 429);
-  const d = await callAppsScript(env, { action: 'bookerLogin', email, passwordHash });
+  const d = await callBackend(env, request, { action: 'bookerLogin', email, passwordHash }, '');
   if (!d || !d.ok) { await ipRateLimitPenalize(request, env); return json(d || { ok: false, error: 'Login mislykkedes' }); }
 
   const sid = crypto.randomUUID();
@@ -241,9 +256,10 @@ async function apiSession(request, env) {
   // 'refreshSession' i stedet for 'login': et udløbet medlems-token (normalt efter
   // 8t, fx en fane der genindlæses) må ikke tælle som et forkert login-forsøg —
   // ellers kan flere samtidige fane-genindlæsninger udløse konto-lockout.
-  const d = await callAppsScript(env, {
-    action: 'refreshSession', email: sess.data.email, passwordHash: sess.data.passwordHash, bandId: sess.data.bandId
-  });
+  const d = await callBackend(env, request, {
+    action: 'refreshSession', email: sess.data.email,
+    passwordHash: sess.data.passwordHash, bandId: sess.data.bandId
+  }, sess.data.bandId);
   if (!d || !d.ok) { await env.SESSIONS.delete('sess:' + sess.sid); return json({ ok: false }, 200, { 'Set-Cookie': clearCookie() }); }
   if (d.memberToken) { sess.data.passwordHash = d.memberToken; delete d.memberToken; } // rul tokenet videre
   await saveSession(env, sess.sid, sess.data); // forny TTL
@@ -264,10 +280,10 @@ async function apiChangePassword(request, env) {
   const body = await request.json();
   const newHash = String(body.newHash || '');
   if (newHash.length !== 64) return json({ ok: false, error: 'Ugyldig ny adgangskode' }, 400);
-  const d = await callAppsScript(env, {
+  const d = await callBackend(env, request, {
     action: 'changePassword', email: sess.data.email, bandId: sess.data.bandId,
     oldHash: sess.data.passwordHash, newHash
-  });
+  }, sess.data.bandId);
   if (!d || !d.ok) return json(d || { ok: false, error: 'Kunne ikke skifte adgangskode' });
   // Opdatér det gemte credential med det nyudstedte token (falder tilbage til det
   // rå hash hvis backend af en eller anden grund ikke leverede et — login virker stadig).
@@ -287,7 +303,30 @@ async function apiCall(request, env) {
     return json({ ok: false, error: 'Forbudt' }, 403);
   }
 
+  // ── Omskiftning pr. band ────────────────────────────────────────────────
+  // Se backend.js for hvorfor dette er et flag og ikke et big bang: DMDT har
+  // rigtige data i Apps Scripts Google Sheet, og et ubetinget skift ville vise
+  // dem en tom app.
+  const bandId = String(body.bandId || '');
+  const brugDO = usesDurableObjects(env, bandId) ||
+    // Operatør- og booker-actions har intet bandId, men hører til det nye lag
+    // så snart nogen er skiftet over.
+    (!bandId && String(env.BACKEND || '').startsWith('do'));
+
   const sess = await loadSession(request, env);
+
+  if (brugDO) {
+    // getConfig er offentlig: login-skærmens branding skal kunne hentes FØR
+    // nogen er logget ind. Samme undtagelse som på den gamle sti.
+    if (!sess && action !== 'getConfig') {
+      return json({ ok: false, error: 'Ikke logget ind' }, 401);
+    }
+    const d = await callDurableObjects(env, request, body, sess && sess.data);
+    if (!sess) return json(d);
+    await saveSession(env, sess.sid, sess.data);
+    return json(d, 200, { 'Set-Cookie': sessionCookie(sess.sid) });
+  }
+
   if (!sess) {
     // getConfig er bevidst offentlig i Apps Script (verificerer ikke auth) — den
     // driver login-skærmens branding og skal kunne hentes FØR nogen er logget ind.
@@ -335,10 +374,30 @@ async function apiFakturaPdf(request, env, url) {
   const contractId = url.searchParams.get('contractId') || '';
   if (!contractId) return htmlError('Fejl', 'contractId mangler i adressen.', 400);
 
-  const d = await callAppsScript(env, {
-    action: 'renderInvoicePdf', contractId,
-    bandId: sess.data.bandId, email: sess.data.email, passwordHash: sess.data.passwordHash
-  });
+  // PDF'en indeholder CPR og streames som bytes — den passerer aldrig et
+  // JSON-svar. Derfor kaldes renderInvoicePdf direkte og ikke gennem
+  // action-tabellen; se actions/pdf.js.
+  let d;
+  if (usesDurableObjects(env, sess.data.bandId)) {
+    const { verifyMember, requireAdmin } = await import('./auth/verify.js');
+    const { renderInvoicePdf } = await import('./actions/pdf.js');
+    const { bandStub } = await import('./lib/addressing.js');
+    try {
+      const band = bandStub(env, sess.data.bandId);
+      const m = await verifyMember(env, band, sess.data.email, sess.data.passwordHash);
+      requireAdmin(m);
+      d = Object.assign({ ok: true },
+        await renderInvoicePdf(env, band, sess.data.bandId, contractId));
+    } catch (e) {
+      d = { ok: false, error: (e && e.userFacing) ? e.message : 'Kunne ikke danne PDF' };
+      if (!(e && e.userFacing)) console.error('faktura-pdf: ' + (e && e.stack || e));
+    }
+  } else {
+    d = await callAppsScript(env, {
+      action: 'renderInvoicePdf', contractId,
+      bandId: sess.data.bandId, email: sess.data.email, passwordHash: sess.data.passwordHash
+    });
+  }
   if (!d || !d.ok || !d.pdfBase64) {
     return htmlError('Kunne ikke klargøre honorarafregning', escapeHtmlW((d && d.error) || 'Ukendt fejl'));
   }
@@ -397,7 +456,13 @@ async function apiSign(request, env) {
     return json({ ok: false, error: 'Ugyldig handling' }, 400);
   }
 
-  const d = await callAppsScript(env, payload);
+  // Signeringsflowet har intet bandId i request'en — bandet står i tokenet. Vi
+  // kan derfor ikke afgøre pr. band her, og bruger det globale flag. Er nogen
+  // bands skiftet, hører hele signeringsflowet til det nye lag: tokenet er
+  // udstedt af det lag der også skal validere det.
+  const d = String(env.BACKEND || '').startsWith('do')
+    ? await callDurableObjects(env, request, payload, null)
+    : await callAppsScript(env, payload);
   return json(d || { ok: false, error: 'Linket er ugyldigt eller udløbet.' });
 }
 
