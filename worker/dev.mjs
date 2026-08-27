@@ -29,8 +29,38 @@ const base = process.env.LOCALAPPDATA || tmpdir();
 const stateDir = join(base, 'band-app-wrangler-state');
 mkdirSync(stateDir, { recursive: true });
 
+// ── Lokale udviklings-hemmeligheder ─────────────────────────────────────────
+//
+// ADVARSEL: disse værdier er OFFENTLIGE — de står i en versionsstyret fil og må
+// ALDRIG bruges i produktion. De findes udelukkende for at `wrangler dev` kan
+// køre rigtige login- og CPR-flows lokalt uden at nogen skal lægge produktions-
+// hemmeligheder på disken.
+//
+// I produktion sættes de rigtige værdier med `wrangler secret put`, og dette
+// script bruges ikke — det er kun til lokal udvikling.
+//
+// Værdierne er faste og ikke tilfældige, så sessioner og krypteret CPR overlever
+// en genstart af dev-serveren. Var de tilfældige, ville hvert restart logge dig
+// ud og gøre lokalt gemte CPR uafkrypterbare.
+const LOKALE_DEV_HEMMELIGHEDER = {
+  MASTER_SECRET: 'LOKAL-UDVIKLING-IKKE-EN-HEMMELIGHED-master-secret-0001',
+  // 32 bytes base64 — CPR_KEY skal have præcis den længde.
+  CPR_KEY: 'bG9rYWwtdWR2aWtsaW5nLWlra2UtZW4taGVtbWVsaWc=',
+  BOOTSTRAP_TOKEN: 'LOKAL-UDVIKLING-bootstrap-0001'
+};
+
+const brugerArgs = process.argv.slice(2);
+
+// Sæt kun de hemmeligheder kalderen ikke selv har angivet.
+const auto = [];
+for (const [navn, vaerdi] of Object.entries(LOKALE_DEV_HEMMELIGHEDER)) {
+  if (!brugerArgs.some(a => a.startsWith(navn + ':'))) {
+    auto.push('--var', navn + ':' + vaerdi);
+  }
+}
+
 const wrangler = join(here, 'node_modules', 'wrangler', 'bin', 'wrangler.js');
-const args = ['dev', '--persist-to', stateDir, ...process.argv.slice(2)];
+const args = ['dev', '--persist-to', stateDir, ...auto, ...brugerArgs];
 
 console.log('[dev.mjs] lokal tilstand: ' + stateDir);
 console.log('[dev.mjs] wrangler ' + args.join(' '));

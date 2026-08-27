@@ -8,7 +8,7 @@ async function renderDashboard(){
     <div class="page-head">
       <div>
         <h1 class="serif">${escapeHtml(SESSION.member.name||'')}</h1>
-        <div class="lede">Her er status på <span data-band-name></span>.</div>
+        <div class="lede">Her er status på ${escapeHtml(BAND_CONFIG.bandName || 'bandet')}.</div>
       </div>
     </div>
     <div class="grid-4" style="margin-bottom:28px" id="dashStats">
