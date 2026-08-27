@@ -58,6 +58,33 @@ export function diagAuthorized(request, env) {
  * der kan trigge 200.000 PBKDF2-iterationer ville være en oplagt måde at brænde
  * CPU-budgettet. Den kræver derfor fortsat gyldigt token.
  */
+// Loft for hvor mange iterationer den UAUTORISEREDE sti må måle. Ét enkelt hash
+// er billigt og bundet, men uden et loft kunne ?iter=5000000 bruges til at
+// brænde CPU-budgettet.
+const UAUTORISERET_ITER_LOFT = 20000;
+
+/**
+ * Måler ÉT enkelt PBKDF2-kald. Bevidst ikke flere gentagelser: på gratisplanen
+ * er loftet 10 ms CPU pr. request, så tre runder á 10.000 iterationer ville selv
+ * overskride budgettet og få requesten dræbt — målingen ville altså ødelægge det
+ * den skulle måle.
+ *
+ * Det gør til gengæld testen skarp: kommer der et svar, passede arbejdet inden
+ * for budgettet. Bliver requesten dræbt ("exceeded CPU limit" i tail), gjorde
+ * det ikke. Fejltilstanden ER svaret.
+ */
+export async function maalEtHash(iterations) {
+  const t0 = Date.now();
+  await pbkdf2('a'.repeat(64), 'AAAAAAAAAAAAAAAAAAAAAA==', iterations);
+  return { iterationer: iterations, msVaegur: Date.now() - t0 };
+}
+
+export function iterFraUrl(url) {
+  const n = parseInt(new URL(url).searchParams.get('iter'), 10);
+  if (!Number.isFinite(n) || n < 1000) return null;
+  return Math.min(n, UAUTORISERET_ITER_LOFT);
+}
+
 export async function diagBillig(env) {
   let lagerOk = false;
   let skemaVersion = null;

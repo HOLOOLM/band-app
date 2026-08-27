@@ -9,7 +9,7 @@ import { BandDO } from './do/band.js';
 import { MasterDO } from './do/master.js';
 import { selftest } from './do/selftest.js';
 import { benchmark } from './do/bench.js';
-import { diag, diagBillig, diagAuthorized } from './do/diag.js';
+import { diag, diagBillig, diagAuthorized, maalEtHash, iterFraUrl } from './do/diag.js';
 import { bandStub } from './lib/addressing.js';
 
 export { BandDO, MasterDO };
@@ -40,7 +40,13 @@ export default {
           // men det kritiske spørgsmål (virker EU-jurisdiktionen?) kan besvares
           // uden at skulle håndtere et token i en terminal.
           try {
-            console.log('DIAG ' + JSON.stringify(await diagBillig(env)));
+            // ?iter=N måler ÉT hash ved N iterationer. Uden parameteren
+            // rapporteres kun de billige tjek.
+            const iter = iterFraUrl(request.url);
+            const ud = iter
+              ? { kdf: await maalEtHash(iter) }
+              : await diagBillig(env);
+            console.log('DIAG ' + JSON.stringify(ud));
           } catch (e) {
             console.log('DIAG fejlede: ' + String(e && e.message || e));
           }
