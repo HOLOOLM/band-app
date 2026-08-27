@@ -240,6 +240,131 @@ export class MasterDO extends DurableObject {
     return { ok: true };
   }
 
+  // ── Bookere ──────────────────────────────────────────────────────────────
+
+  async getBooker(email) {
+    await this.#ready();
+    return this.db.one('SELECT * FROM bookers WHERE email = ?',
+      String(email || '').toLowerCase().trim());
+  }
+
+  async listBookers() {
+    await this.#ready();
+    const rows = this.db.rows(
+      `SELECT email, name, agency, status, force_password_change, created_at
+         FROM bookers ORDER BY email`);
+    // Adgangslisten med, så operatøren kan se hvem der har adgang til hvad uden
+    // et opslag pr. booker.
+    for (const r of rows) {
+      r.bandIds = this.db.rows('SELECT band_id FROM booker_bands WHERE email = ?', r.email)
+        .map(x => x.bandId);
+    }
+    return rows;
+  }
+
+  async createBooker(email, data) {
+    await this.#ready();
+    this.db.insert('bookers', Object.assign({
+      email: String(email).toLowerCase().trim(),
+      createdAt: new Date().toISOString()
+    }, data));
+    return { ok: true };
+  }
+
+  async updateBooker(email, patch) {
+    await this.#ready();
+    const clean = {};
+    for (const k of ['name', 'agency', 'status']) {
+      if (patch[k] !== undefined) clean[k] = patch[k];
+    }
+    if (!Object.keys(clean).length) return { ok: true };
+    const changed = this.db.update('bookers', clean, 'email = ?',
+      String(email).toLowerCase().trim());
+    return { ok: changed > 0 };
+  }
+
+  async putBookerPassword(email, passwordHash, pwSalt, forcePasswordChange) {
+    await this.#ready();
+    const changed = this.db.update('bookers', {
+      passwordHash, pwSalt, forcePasswordChange: forcePasswordChange ? 1 : 0
+    }, 'email = ?', String(email).toLowerCase().trim());
+    return { ok: changed > 0 };
+  }
+
+  async deleteBooker(email) {
+    await this.#ready();
+    const e = String(email).toLowerCase().trim();
+    this.ctx.storage.transactionSync(() => {
+      this.db.run('DELETE FROM bookers WHERE email = ?', e);
+      this.db.run('DELETE FROM booker_bands WHERE email = ?', e);
+    });
+    return { ok: true };
+  }
+
+  /** Bookerens adgangsliste. ALLOW-list: er bandet ikke med, findes det ikke. */
+  async bookerBands(email) {
+    await this.#ready();
+    return this.db.rows('SELECT band_id FROM booker_bands WHERE email = ?',
+      String(email || '').toLowerCase().trim()).map(r => r.bandId);
+  }
+
+  async setBookerBands(email, bandIds) {
+    await this.#ready();
+    const e = String(email).toLowerCase().trim();
+    this.ctx.storage.transactionSync(() => {
+      this.db.run('DELETE FROM booker_bands WHERE email = ?', e);
+      for (const b of bandIds) {
+        if (!b) continue;
+        this.db.run(
+          `INSERT INTO booker_bands (email, band_id) VALUES (?, ?)
+             ON CONFLICT(email, band_id) DO NOTHING`, e, String(b));
+      }
+    });
+    return { ok: true };
+  }
+
+  // Rate-limit på booker-login. Samme mønster som operatør.
+  async bookerLoginState(email, maxAttempts, lockSeconds) {
+    return this.#loginState('bklock:', email, maxAttempts);
+  }
+  async penalizeBookerLogin(email, maxAttempts, lockSeconds) {
+    return this.#penalize('bklock:', email, maxAttempts, lockSeconds);
+  }
+  async clearBookerLoginAttempts(email) {
+    await this.#ready();
+    this.db.run('DELETE FROM master_meta WHERE key = ?',
+      'bklock:' + String(email || '').toLowerCase().trim());
+    return { ok: true };
+  }
+
+  async #loginState(prefix, email, maxAttempts) {
+    await this.#ready();
+    const key = prefix + String(email || '').toLowerCase().trim();
+    const raw = this.db.value('SELECT value FROM master_meta WHERE key = ?', key);
+    if (!raw) return { locked: false, attempts: 0 };
+    let st;
+    try { st = JSON.parse(raw); } catch (e) { return { locked: false, attempts: 0 }; }
+    if (!st.until || Date.parse(st.until) <= Date.now()) {
+      this.db.run('DELETE FROM master_meta WHERE key = ?', key);
+      return { locked: false, attempts: 0 };
+    }
+    return { locked: st.attempts >= maxAttempts, attempts: st.attempts };
+  }
+
+  async #penalize(prefix, email, maxAttempts, lockSeconds) {
+    await this.#ready();
+    const key = prefix + String(email || '').toLowerCase().trim();
+    const st = await this.#loginState(prefix, email, maxAttempts);
+    const attempts = st.attempts + 1;
+    this.db.run(
+      `INSERT INTO master_meta (key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      key, JSON.stringify({
+        attempts, until: new Date(Date.now() + lockSeconds * 1000).toISOString()
+      }));
+    return { locked: attempts >= maxAttempts, attempts };
+  }
+
   // ── Audit ────────────────────────────────────────────────────────────────
   // Ligger i master, fordi operatøren skal kunne læse på tværs af bands i én
   // forespørgsel. Skrivninger sker fra band-objekter via RPC, men aldrig på en

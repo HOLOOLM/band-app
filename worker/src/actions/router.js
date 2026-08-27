@@ -6,7 +6,7 @@
 import { ACTIONS, VALID_AUTH } from './index.js';
 import { bandStub, masterStub } from '../lib/addressing.js';
 import { verifyMember, requireAdmin, verifyOperator, verifyBooker, verifySigning } from '../auth/verify.js';
-import { errorToResponse, userError } from '../lib/errors.js';
+import { errorToResponse, userError, SIGNING_REJECT_MESSAGE } from '../lib/errors.js';
 
 /**
  * Kører en action.
@@ -108,7 +108,8 @@ export async function runAction(env, actionName, p, creds) {
 
       case 'signing': {
         const s = await verifySigning(env, p && p.t);
-        if (!s) throw userError('Linket er ugyldigt eller udløbet');
+        // SAMME besked som action'ens egen validering — se SIGNING_REJECT_MESSAGE.
+        if (!s) throw userError(SIGNING_REJECT_MESSAGE);
         ctx.signing = s;
         break;
       }

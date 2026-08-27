@@ -601,6 +601,185 @@ export class BandDO extends DurableObject {
     };
   }
 
+  // ── Bookings og e-signatur ───────────────────────────────────────────────
+
+  async getBooking(id) {
+    await this.#ready();
+    return this.db.one('SELECT * FROM bookings WHERE id = ?', String(id));
+  }
+
+  async listBookings() {
+    await this.#ready();
+    return this.db.rows('SELECT * FROM bookings ORDER BY updated_at DESC');
+  }
+
+  /** Findes der et AKTIVT underskriftsforløb for kontrakten? */
+  async activeBookingFor(contractId) {
+    await this.#ready();
+    return this.db.one(
+      `SELECT * FROM bookings
+        WHERE contract_id = ? AND status IN ('sent', 'band_signed')`,
+      String(contractId));
+  }
+
+  async createBooking(row) {
+    await this.#ready();
+    let id = null;
+    this.ctx.storage.transactionSync(() => {
+      id = 'bkg' + this.#nextCounterSync('booking');
+      this.db.insert('bookings', Object.assign({ id }, row));
+    });
+    return { ok: true, id };
+  }
+
+  /**
+   * AL statusændring på en booking går gennem her.
+   *
+   * Genlæser rækken, kræver at nuværende status er en af de tilladte, og skriver
+   * patch + historik i ÉN transaktion. Det forhindrer at to samtidige
+   * handlinger — fx admin godkender mens operatøren annullerer — kan bringe
+   * bookingen i en selvmodsigende tilstand.
+   *
+   * Fra-status-tjekket er det vigtige: uden det kunne den samme
+   * signeringshandling køres to gange og oprette to godkendte kontrakter.
+   */
+  async transitionBooking(bookingId, fromStatuses, to, actor, note, extraPatch) {
+    await this.#ready();
+    let svar = null;
+    this.ctx.storage.transactionSync(() => {
+      const row = this.db.one('SELECT * FROM bookings WHERE id = ?', String(bookingId));
+      if (!row) { svar = { ok: false, error: 'Booking ikke fundet' }; return; }
+      if (!fromStatuses.includes(String(row.status))) {
+        svar = { ok: false, error: 'Denne handling kan ikke udføres i status "' + row.status + '"' };
+        return;
+      }
+      let history = [];
+      try { history = JSON.parse(row.history || '[]') || []; } catch (e) { history = []; }
+      history.push({
+        ts: new Date().toISOString(), actor: actor || '',
+        from: row.status, to, note: note || ''
+      });
+      const patch = Object.assign({
+        status: to,
+        updatedAt: new Date().toISOString(),
+        history: JSON.stringify(history)
+      }, extraPatch || {});
+      this.db.update('bookings', patch, 'id = ?', String(bookingId));
+      svar = { ok: true, booking: Object.assign({}, row, patch) };
+    });
+    return svar;
+  }
+
+  /**
+   * Arrangørens underskrift: transition OG kontrakt-godkendelse i ÉN
+   * transaktion.
+   *
+   * De to SKAL være atomare sammen. Ellers kunne der opstå en tilstand hvor
+   * bookingen står som 'completed', men der ikke findes nogen godkendt kontrakt
+   * — altså en underskrevet aftale uden aftale.
+   *
+   * `contractId` tom betyder Fase C (tilbud fra en booker, uden forudgående
+   * kontraktnummer): så oprettes kontrakten her, med samme tællerbaserede
+   * id-tildeling som saveContract, så de to oprettelsesveje ikke kan kollidere.
+   */
+  async completeBookingSignature(bookingId, arrangoerSignature, draft) {
+    await this.#ready();
+    let svar = null;
+    this.ctx.storage.transactionSync(() => {
+      const fresh = this.db.one('SELECT * FROM bookings WHERE id = ?', String(bookingId));
+      if (!fresh || fresh.status !== 'band_signed') {
+        svar = { ok: false, error: 'Denne kontrakt er allerede underskrevet eller ikke længere tilgængelig.' };
+        return;
+      }
+      const nu = new Date().toISOString();
+      let contractId = fresh.contractId || '';
+
+      if (contractId && this.db.one('SELECT id FROM contracts WHERE id = ?', contractId)) {
+        this.db.update('contracts', { status: 'godkendt', updatedAt: nu }, 'id = ?', contractId);
+      } else {
+        contractId = 'c' + this.#nextCounterSync('contract');
+        this.db.insert('contracts', {
+          id: contractId,
+          type: draft.type || 'Spillested',
+          status: 'godkendt',
+          arrangoer: JSON.stringify(draft.arrangoer || {}),
+          venue: JSON.stringify(draft.venue || {}),
+          date: draft.date ? String(draft.date).slice(0, 10) : '',
+          getIn: draft.getIn || '', soundcheck: draft.soundcheck || '',
+          showtimeFrom: draft.showtimeFrom || '', showtimeTo: draft.showtimeTo || '',
+          sets: Number(draft.sets) || 0, setMinutes: Number(draft.setMinutes) || 0,
+          musicianCount: Number(draft.musicianCount) || 0,
+          crewCount: Number(draft.crewCount) || 0,
+          guestCount: Number(draft.guestCount) || 0,
+          honorar: Number(draft.honorar) || 0,
+          paymentTerms: draft.paymentTerms || '',
+          paymentTermsOther: draft.paymentTermsOther || '',
+          notes: draft.notes || '',
+          // memberNote sættes IKKE: draften har den aldrig med (den er
+          // bandintern og fjernes før snapshottet), så en arrangør-underskrift
+          // kan ikke indføre den.
+          memberNote: '',
+          createdAt: nu, updatedAt: nu
+        });
+      }
+
+      let history = [];
+      try { history = JSON.parse(fresh.history || '[]') || []; } catch (e) { history = []; }
+      history.push({
+        ts: nu, actor: 'arrangør (uden login)',
+        from: fresh.status, to: 'completed', note: 'Underskrevet af arrangør'
+      });
+      this.db.update('bookings', {
+        status: 'completed',
+        arrangoerSignature: JSON.stringify(arrangoerSignature),
+        contractId,
+        history: JSON.stringify(history),
+        updatedAt: nu
+      }, 'id = ?', String(bookingId));
+
+      svar = { ok: true, contractId };
+    });
+    return svar;
+  }
+
+  /** Bookerens egne tilbud i dette band. Ejerskabet er i WHERE-betingelsen. */
+  async listBookingsForBooker(bookerId) {
+    await this.#ready();
+    return this.db.rows(
+      'SELECT * FROM bookings WHERE booker_id = ? ORDER BY updated_at DESC',
+      String(bookerId));
+  }
+
+  /** Retter felter på en booking uden statusskifte. Kun til kladde-redigering. */
+  async updateBooking(id, patch) {
+    await this.#ready();
+    const tillad = ['contractDraft', 'arrangoerName', 'arrangoerEmail', 'updatedAt'];
+    const clean = {};
+    for (const k of tillad) if (patch[k] !== undefined) clean[k] = patch[k];
+    if (!Object.keys(clean).length) return { ok: false, error: 'Ingen felter' };
+    const changed = this.db.update('bookings', clean, 'id = ?', String(id));
+    return { ok: changed > 0 };
+  }
+
+  async setBookingTokenExp(bookingId, tokenExp) {
+    await this.#ready();
+    const changed = this.db.update('bookings', { tokenExp }, 'id = ?', String(bookingId));
+    return { ok: changed > 0 };
+  }
+
+  async setBookingPdf(bookingId, pdfFileId) {
+    await this.#ready();
+    const changed = this.db.update('bookings', { pdfFileId }, 'id = ?', String(bookingId));
+    return { ok: changed > 0 };
+  }
+
+  /** Admin-e-mails til notifikationer. */
+  async adminEmails() {
+    await this.#ready();
+    return this.db.rows(`SELECT email FROM members WHERE role = 'admin' AND email != ''`)
+      .map(r => r.email);
+  }
+
   // ── Assets (logo, rider-PDF, sceneplan) ──────────────────────────────────
   //
   // Erstatter Drive-filer. Loftet er 2 MB pr. SQL-række, så større filer deles

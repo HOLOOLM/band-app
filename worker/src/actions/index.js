@@ -38,6 +38,17 @@ import {
 import {
   getAllJobs, getAllHonorar, getFeedUrl, rotateFeedToken
 } from './crossband.js';
+import {
+  sendContractForSigning, listIncomingBookings, approveAndSignBooking,
+  declineBooking, cancelBooking, resendSigningLink,
+  getSignableBooking, submitArrangoerSignature, declineByArrangoer
+} from './bookings.js';
+import {
+  bookerLogin, bookerGetBands, bookerListOffers, bookerSaveOffer,
+  bookerSendOffer, bookerCancelOffer,
+  operatorListBookers, operatorSaveBooker, operatorDeleteBooker,
+  operatorResetBookerPassword
+} from './booker.js';
 
 // scope: hvilket lager action'en får udleveret
 //   'band'      → ctx.band er bandets DO-stub (kræver gyldigt bandId)
@@ -137,7 +148,32 @@ export const ACTIONS = {
   getAllJobs:       { scope: 'identity', auth: 'identity', fn: getAllJobs },
   getAllHonorar:    { scope: 'identity', auth: 'identity', fn: getAllHonorar },
   getFeedUrl:       { scope: 'band',     auth: 'admin',    fn: getFeedUrl },
-  rotateFeedToken:  { scope: 'band',     auth: 'admin',    fn: rotateFeedToken }
+  rotateFeedToken:  { scope: 'band',     auth: 'admin',    fn: rotateFeedToken },
+
+  // ── Fase 3g ──────────────────────────────────────────────────────────────
+  // De tre sidste er OFFENTLIGE og gates udelukkende af bk:-tokenet: en
+  // arrangør har intet login. Alle fejl der giver samme besked, er bevidst.
+  sendContractForSigning:   { scope: 'band', auth: 'admin',   fn: sendContractForSigning },
+  listIncomingBookings:     { scope: 'band', auth: 'admin',   fn: listIncomingBookings },
+  approveAndSignBooking:    { scope: 'band', auth: 'admin',   fn: approveAndSignBooking },
+  declineBooking:           { scope: 'band', auth: 'admin',   fn: declineBooking },
+  cancelBooking:            { scope: 'band', auth: 'admin',   fn: cancelBooking },
+  resendSigningLink:        { scope: 'band', auth: 'admin',   fn: resendSigningLink },
+  getSignableBooking:       { scope: 'none', auth: 'signing', fn: getSignableBooking },
+  submitArrangoerSignature: { scope: 'none', auth: 'signing', fn: submitArrangoerSignature },
+  declineByArrangoer:       { scope: 'none', auth: 'signing', fn: declineByArrangoer },
+
+  // ── Fase 3h ──────────────────────────────────────────────────────────────
+  bookerLogin:       { scope: 'none',   auth: 'public',   fn: bookerLogin },
+  bookerGetBands:    { scope: 'none',   auth: 'booker',   fn: bookerGetBands },
+  bookerListOffers:  { scope: 'none',   auth: 'booker',   fn: bookerListOffers },
+  bookerSaveOffer:   { scope: 'none',   auth: 'booker',   fn: bookerSaveOffer },
+  bookerSendOffer:   { scope: 'none',   auth: 'booker',   fn: bookerSendOffer },
+  bookerCancelOffer: { scope: 'none',   auth: 'booker',   fn: bookerCancelOffer },
+  operatorListBookers:         { scope: 'master', auth: 'operator', fn: operatorListBookers },
+  operatorSaveBooker:          { scope: 'master', auth: 'operator', fn: operatorSaveBooker },
+  operatorDeleteBooker:        { scope: 'master', auth: 'operator', fn: operatorDeleteBooker },
+  operatorResetBookerPassword: { scope: 'master', auth: 'operator', fn: operatorResetBookerPassword }
 };
 
 export const VALID_SCOPES = ['band', 'master', 'identity', 'none'];
