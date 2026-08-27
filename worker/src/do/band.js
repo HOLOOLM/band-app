@@ -135,6 +135,160 @@ export class BandDO extends DurableObject {
     return { ok: true, written };
   }
 
+  /**
+   * Alt hvad getConfig skal svare med, i ÉT kald.
+   *
+   * Dette er appens absolut varmeste sti: login-skærmen kalder den uden auth ved
+   * hvert boot, også for besøgende der aldrig logger ind. Derfor samles den her
+   * frem for at lade Workeren lave tre-fire RPC-runder, og derfor gemmes logoet
+   * som en færdig data-URL-streng — så der ikke skal base64-encodes noget på
+   * læsestien. Det erstatter _cachedLogoDataUrl (Code.gs:2787) helt: en
+   * SQLite-læsning i samme proces er hurtigere end cache-opslaget var.
+   */
+  async getPublicConfig(publicKeys) {
+    await this.#ready();
+    const settings = {};
+    for (const r of this.db.rows('SELECT key, value FROM settings')) settings[r.key] = r.value;
+    const meta = this.#getMeta();
+
+    const pub = {};
+    for (const k of publicKeys) pub[k] = settings[k] || '';
+
+    // Logoet ligger som færdig data-URL; øvrige assets rapporteres kun som
+    // tilstedeværende, så getConfig aldrig flytter store blobs.
+    pub.logoDataUrl = this.db.value(
+      `SELECT data_url FROM assets WHERE kind = 'logo' AND seq = 0`) || '';
+
+    const har = kind => Number(this.db.value(
+      'SELECT count(*) AS c FROM assets WHERE kind = ?', kind) ?? 0) > 0;
+    pub.hasRiderPdf = har('rider');
+    pub.hasRider = pub.hasRiderPdf || !!String(settings.riderText || '').trim();
+    pub.hasSceneplan = har('sceneplan');
+
+    // Bandets flag læses fra de spejlede værdier — ALDRIG fra master. Fejler
+    // lukket (false), så en manglende spejling ikke åbner en betalt feature.
+    pub.crossBand = meta.cross_band === '1' || meta.cross_band === 'true';
+    pub.booking = meta.booking === '1' || meta.booking === 'true';
+
+    return { config: pub, status: meta.status || 'active' };
+  }
+
+  // ── Medlemmer ────────────────────────────────────────────────────────────
+  // Bemærk at intet af dette filtrerer på band_id: kolonnen findes ikke, fordi
+  // bandet er implicit i hvilket objekt vi er inde i.
+
+  /** Ét medlem ved e-mail. Returnerer ALLE felter, inkl. hash — kun til auth. */
+  async findMemberByEmail(email) {
+    await this.#ready();
+    const e = String(email || '').toLowerCase().trim();
+    if (!e) return null;
+    return this.db.one('SELECT * FROM members WHERE email = ?', e);
+  }
+
+  async findMemberById(id) {
+    await this.#ready();
+    return this.db.one('SELECT * FROM members WHERE id = ?', String(id));
+  }
+
+  /** Alle medlemmer uden hemmeligheder. Til medlemslisten. */
+  async listMembers() {
+    await this.#ready();
+    return this.db.rows(
+      `SELECT id, name, category, instrument, phone, email, reg_account, address,
+              role, force_password_change, created_at
+         FROM members ORDER BY name COLLATE NOCASE`
+    );
+  }
+
+  async insertMember(m) {
+    await this.#ready();
+    this.db.insert('members', m);
+    return { ok: true, id: m.id };
+  }
+
+  async updateMember(id, patch) {
+    await this.#ready();
+    if (!Object.keys(patch).length) return { ok: false, error: 'Ingen felter' };
+    const changed = this.db.update('members', patch, 'id = ?', String(id));
+    return { ok: changed > 0 };
+  }
+
+  /**
+   * Sætter nyt password OG dræber alle sessioner for medlemmet i én transaktion.
+   * De to hører sammen: efter et kodeskift skal udestående sessioner være døde,
+   * og et halvt gennemført skift ville efterlade en session med gammel adgang.
+   */
+  async setMemberPassword(id, passwordHash, pwSalt, forcePasswordChange) {
+    await this.#ready();
+    let ok = false;
+    this.ctx.storage.transactionSync(() => {
+      this.db.update('members', {
+        passwordHash, pwSalt,
+        forcePasswordChange: forcePasswordChange ? 1 : 0
+      }, 'id = ?', String(id));
+      ok = this.db.changes() > 0;
+      if (ok) this.db.run('DELETE FROM sessions WHERE subject = ?', String(id));
+    });
+    return { ok };
+  }
+
+  // ── Login-forsøg (rate-limit pr. e-mail) ─────────────────────────────────
+  // Erstatter CacheService-baseret lockout (Code.gs:1602-1609). Ligger i
+  // objektet, så tælleren er pr. band og ikke deles med andre tenants.
+  //
+  // Rate-limit rækkerne lever i login_log-tabellen? Nej — de er flygtige og
+  // hører ikke i en GDPR-eksport. De ligger i band_meta med en tidsstempel, så
+  // de ikke kræver en ekstra tabel og forsvinder ved oprydning.
+
+  async loginAttemptState(email, maxAttempts, lockSeconds) {
+    await this.#ready();
+    const key = 'loginlock:' + String(email || '').toLowerCase().trim();
+    const raw = this.db.value('SELECT value FROM band_meta WHERE key = ?', key);
+    if (!raw) return { locked: false, attempts: 0 };
+    let st;
+    try { st = JSON.parse(raw); } catch (e) { return { locked: false, attempts: 0 }; }
+    // Udløbet vindue = ren tavle.
+    if (!st.until || Date.parse(st.until) <= Date.now()) {
+      this.db.run('DELETE FROM band_meta WHERE key = ?', key);
+      return { locked: false, attempts: 0 };
+    }
+    return { locked: st.attempts >= maxAttempts, attempts: st.attempts, until: st.until };
+  }
+
+  /** Tæller ét fejlet forsøg op. Returnerer den nye tilstand. */
+  async penalizeLogin(email, maxAttempts, lockSeconds) {
+    await this.#ready();
+    const key = 'loginlock:' + String(email || '').toLowerCase().trim();
+    const st = await this.loginAttemptState(email, maxAttempts, lockSeconds);
+    const attempts = st.attempts + 1;
+    const until = new Date(Date.now() + lockSeconds * 1000).toISOString();
+    this.db.run(
+      `INSERT INTO band_meta (key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      key, JSON.stringify({ attempts, until })
+    );
+    return { locked: attempts >= maxAttempts, attempts, remaining: Math.max(0, maxAttempts - attempts) };
+  }
+
+  async clearLoginAttempts(email) {
+    await this.#ready();
+    this.db.run('DELETE FROM band_meta WHERE key = ?',
+      'loginlock:' + String(email || '').toLowerCase().trim());
+    return { ok: true };
+  }
+
+  /** Skriver en linje i login-loggen. Kræver at kalderen har verificeret auth. */
+  async trackLogin(memberId, email, userAgent) {
+    await this.#ready();
+    this.db.insert('login_log', {
+      ts: new Date().toISOString(),
+      memberId: String(memberId),
+      email: String(email || '').toLowerCase().trim(),
+      userAgent: String(userAgent || '').slice(0, 200)
+    });
+    return { ok: true };
+  }
+
   // ── Sessioner ────────────────────────────────────────────────────────────
   // Flyttet hertil fra KV. Gratisplanen tillader kun 1.000 KV-skrivninger/dag,
   // og med fornyelse ved hvert /api/call ramte man muren ved 6-7 bands. Her

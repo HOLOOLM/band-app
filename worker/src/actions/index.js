@@ -1,0 +1,53 @@
+// ACTION-tabellen. Erstatter handle() (Code.gs:615-739).
+//
+// Hver action erklærer sit `scope` (hvilket objekt den arbejder mod) og sin
+// `auth` (hvem der må kalde den). Routeren kører verifikationen ud fra de to
+// felter FØR `fn` kaldes.
+//
+// Det er den vigtigste strukturelle forbedring i porten. I Apps Script lå
+// _requireAdmin-kaldene inde i hver action, hvor man kunne glemme et — og en
+// glemt gate er en åben dør. Her kan en action ikke registreres uden at erklære
+// sin gate, og routeren nægter at køre en action med ukendt auth-værdi.
+
+import { login, refreshSession, changePassword, trackLogin, getConfig } from './auth.js';
+
+// scope: hvilket lager action'en får udleveret
+//   'band'      → ctx.band er bandets DO-stub (kræver gyldigt bandId)
+//   'master'    → ctx.master er master-stubben
+//   'identity'  → kryds-band; ctx.bandIds + fan-out
+//   'none'      → intet lager
+//
+// auth: hvad routeren kræver, før fn kaldes
+//   'public'    → ingen auth. Må KUN bruges hvor svaret er offentligt.
+//   'member'    → gyldigt medlem i bandet; ctx.member sættes
+//   'admin'     → medlem med role=admin
+//   'operator'  → gyldigt operatør-token
+//   'booker'    → gyldigt booker-token
+//   'signing'   → gyldigt bk:-signeringstoken
+export const ACTIONS = {
+  // ── Fase 3a ──────────────────────────────────────────────────────────────
+  // login og refreshSession er 'public', fordi de ER autentifikationen — de
+  // verificerer selv credentials og har deres egen rate-limit.
+  login:          { scope: 'band', auth: 'public', fn: login },
+  refreshSession: { scope: 'band', auth: 'public', fn: refreshSession },
+  changePassword: { scope: 'band', auth: 'public', fn: changePassword },
+  getConfig:      { scope: 'band', auth: 'public', fn: getConfig },
+  trackLogin:     { scope: 'band', auth: 'member', fn: trackLogin }
+};
+
+export const VALID_SCOPES = ['band', 'master', 'identity', 'none'];
+export const VALID_AUTH = ['public', 'member', 'admin', 'operator', 'booker', 'signing'];
+
+/**
+ * Kontrollerer at tabellen er velformet. Kaldes af selvtesten, så en action med
+ * en stavefejl i `auth` bliver fanget i test frem for at fejle åbent i drift.
+ */
+export function validateActionTable() {
+  const fejl = [];
+  for (const [navn, a] of Object.entries(ACTIONS)) {
+    if (!a || typeof a.fn !== 'function') fejl.push(navn + ': mangler fn');
+    if (!VALID_SCOPES.includes(a && a.scope)) fejl.push(navn + ': ukendt scope ' + (a && a.scope));
+    if (!VALID_AUTH.includes(a && a.auth)) fejl.push(navn + ': ukendt auth ' + (a && a.auth));
+  }
+  return fejl;
+}

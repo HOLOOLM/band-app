@@ -11,6 +11,7 @@
 
 import { bandStub, masterStub, fanOut, jurisdictionActive } from '../lib/addressing.js';
 import { authChecks } from './selftest-auth.js';
+import { actionChecks } from './selftest-actions.js';
 
 const BAND_TABLES = ['members', 'contracts', 'attendances', 'invoices',
                      'bookings', 'settings', 'login_log', 'sessions',
@@ -24,6 +25,9 @@ export async function selftest(env) {
   try {
     // ── Crypto, password-hashing og tokens (Fase 3a) ──────────────────────
     await authChecks(ok);
+
+    // ── Auth-actions gennem routeren, inkl. gates (Fase 3a) ───────────────
+    await actionChecks(env, ok, advarsler);
 
     // ── Skema løftes ved første adgang ────────────────────────────────────
     const master = masterStub(env);
