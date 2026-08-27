@@ -15,6 +15,11 @@ To kolonner: `key` | `value`. Én række pr. nøgle. Læses af `getBandConfig()`
 | `theme` | key | "kul" | Tema (baggrund + font): `kul`, `grafit`, `beton`, `stål`, `tåge` |
 | `bgColor` | hex | "#101316" | Valgfri HEX-override af baggrund. Tom = brug temaets. Nuancer udledes automatisk |
 | `textColor` | hex | "#E8EBEE" | Valgfri HEX-override af tekstfarve. Tom = brug temaets |
+| `bgColorCard` | hex | "#0F213C" | Valgfri override af kort/panel-baggrund (`--ink`). Tom = udledt af `bgColor` |
+| `bgColorRaised` | hex | "#16304F" | Valgfri override af hævede flader/inputs (`--ink-soft`). Tom = udledt |
+| `borderColor` | hex | "#1F3D5F" | Valgfri override af rammer/streger (`--ink-line`). Tom = udledt |
+| `textColorDim` | hex | "#D9CFBE" | Valgfri override af sekundær tekst (`--cream-dim`). Tom = udledt af `textColor` |
+| `textColorMute` | hex | "#9A9285" | Valgfri override af dæmpet tekst/labels (`--cream-mute`). Tom = udledt |
 | `fontUi` | font-key | "Inter" | Valgfri font (brødtekst). Tom = temaets. Gyldige: Inter, Space Grotesk, IBM Plex Sans, Instrument Serif, IBM Plex Serif, Fraunces |
 | `fontDisplay` | font-key | "Fraunces" | Valgfri font (overskrifter). Samme gyldige værdier som `fontUi` |
 | `logoFileId` | Drive ID | "1abc…" | Drive file ID til logo (PNG/SVG). Hentes som data-URL ved boot |
@@ -41,7 +46,8 @@ To kolonner: `key` | `value`. Én række pr. nøgle. Læses af `getBandConfig()`
 
 `actGetConfig` (kaldes uden auth ved boot) returnerer kun disse:
 `bandName, bandShortName, bandTagline, emailDomain, theme, primaryColor*,
-bgColor, textColor, fontUi, fontDisplay, contactName, contactEmail,
+bgColor, textColor, bgColorCard, bgColorRaised, borderColor, textColorDim,
+textColorMute, fontUi, fontDisplay, contactName, contactEmail,
 contactPhone, contactAddress, techContactName, techContactPhone,
 riderTemplates` + `logoDataUrl` (logo som data-URL) + `hasRider` (boolean) + `hasSceneplan` (boolean).
 

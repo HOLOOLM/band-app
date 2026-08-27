@@ -2,7 +2,7 @@
 // Klassiske <script>-filer deler global scope; rækkefølgen (01..09) SKAL bevares.
 
 // Band branding/config (henter via actGetConfig ved boot). DMD_LOGO_B64 fyldes ud før første render.
-let BAND_CONFIG = { bandName: '', bandShortName: '', bandTagline: '', emailDomain: '', theme: 'kul', primaryColor: '#8A8A8A', primaryColorSoft: '#A8A8A8', primaryColorDeep: '#5C5C5C', bgColor: '', textColor: '', fontUi: '', fontDisplay: '', contactName: '', contactEmail: '', contactPhone: '', contactAddress: '', techContactName: '', techContactPhone: '', bankName: '', bankReg: '', bankKto: '', payeeName: '', payeeAddress: '', logoDataUrl: '', hasRider: false, hasSceneplan: false };
+let BAND_CONFIG = { bandName: '', bandShortName: '', bandTagline: '', emailDomain: '', theme: 'kul', primaryColor: '#8A8A8A', primaryColorSoft: '#A8A8A8', primaryColorDeep: '#5C5C5C', bgColor: '', bgColorCard: '', bgColorRaised: '', borderColor: '', textColor: '', textColorDim: '', textColorMute: '', fontUi: '', fontDisplay: '', contactName: '', contactEmail: '', contactPhone: '', contactAddress: '', techContactName: '', techContactPhone: '', bankName: '', bankReg: '', bankKto: '', payeeName: '', payeeAddress: '', logoDataUrl: '', hasRider: false, hasSceneplan: false };
 function _b(k){ return (BAND_CONFIG && BAND_CONFIG[k]) || ''; }
 let DMD_LOGO_B64 = '';
 
@@ -54,19 +54,37 @@ const _isHex = v => /^#[0-9A-Fa-f]{6}$/.test(String(v||''));
  * Lægger bandets frie HEX-/font-overrides oven på det valgte tema.
  * Tomme felter = behold temaets værdi. Baggrunds-/tekstnuancer udledes
  * automatisk (ligesom accent-soft/deep), så man kun behøver angive én farve.
+ *
+ * Hver udledt nuance kan dog overstyres eksplicit, hvis udledningen ikke rammer
+ * det ønskede. _hexLighten blander mod hvidt og vasker derfor mætning ud, så en
+ * mættet farvetrappe (fx en navy der bliver MERE blå opad) kan ikke udledes —
+ * den skal angives. Derfor findes bgColorCard/bgColorRaised/borderColor og
+ * textColorDim/textColorMute. Tomme = brug den udledte værdi som før.
  */
 function _applyAppearanceOverrides(c){
   const r = document.documentElement;
-  if (_isHex(c.bgColor)){
-    r.style.setProperty('--ink-deep', c.bgColor);
-    r.style.setProperty('--ink', _hexLighten(c.bgColor, 6));
-    r.style.setProperty('--ink-soft', _hexLighten(c.bgColor, 12));
-    r.style.setProperty('--ink-line', _hexLighten(c.bgColor, 22));
-  }
-  if (_isHex(c.textColor)){
-    r.style.setProperty('--cream', c.textColor);
-    r.style.setProperty('--cream-dim', _hexDarken(c.textColor, 15));
-    r.style.setProperty('--cream-mute', _hexDarken(c.textColor, 38));
+  // Eksplicit HEX vinder over den udledte nuance; er ingen af dem sat, rører vi
+  // ikke variablen, så temaets egen værdi står.
+  const put = (cssVar, explicit, derived) => {
+    if (_isHex(explicit)) r.style.setProperty(cssVar, explicit);
+    else if (derived) r.style.setProperty(cssVar, derived);
+  };
+  const bg = _isHex(c.bgColor) ? c.bgColor : '';
+  const tx = _isHex(c.textColor) ? c.textColor : '';
+
+  if (bg) r.style.setProperty('--ink-deep', bg);
+  put('--ink',      c.bgColorCard,   bg ? _hexLighten(bg, 6)  : '');
+  put('--ink-soft', c.bgColorRaised, bg ? _hexLighten(bg, 12) : '');
+  put('--ink-line', c.borderColor,   bg ? _hexLighten(bg, 22) : '');
+
+  if (tx) r.style.setProperty('--cream', tx);
+  put('--cream-dim',  c.textColorDim,  tx ? _hexDarken(tx, 15) : '');
+  put('--cream-mute', c.textColorMute, tx ? _hexDarken(tx, 38) : '');
+  if (tx){
+    // Hårstreger tones efter tekstfarven, så en varm creme-tekst ikke får kolde
+    // hvide linjer fra temaet.
+    r.style.setProperty('--ink-line-soft',   _hexRgba(tx, .08));
+    r.style.setProperty('--ink-line-strong', _hexRgba(tx, .18));
   }
   if (c.fontUi && FONT_OPTIONS[c.fontUi]) r.style.setProperty('--font-ui', FONT_OPTIONS[c.fontUi]);
   if (c.fontDisplay && FONT_OPTIONS[c.fontDisplay]) r.style.setProperty('--font-display', FONT_OPTIONS[c.fontDisplay]);
@@ -78,6 +96,10 @@ function _hexLighten(hex, pct) {
   const ng = Math.min(255, g + Math.round((255-g)*pct/100));
   const nb = Math.min(255, b + Math.round((255-b)*pct/100));
   return '#'+[nr,ng,nb].map(v=>v.toString(16).padStart(2,'0')).join('');
+}
+function _hexRgba(hex, alpha) {
+  const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+  return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
 }
 function _hexDarken(hex, pct) {
   const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);

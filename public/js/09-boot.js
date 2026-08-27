@@ -782,6 +782,17 @@ function opRenderEditor(){
         ${opColorField('Baggrund (HEX)','bgColor','#101316',true)}
         ${opColorField('Tekst (HEX)','textColor','#E8EBEE',true)}
       </div>
+      <details style="margin-bottom:14px">
+        <summary style="cursor:pointer;color:var(--cream-mute);font-size:12px;font-family:var(--font-mono);letter-spacing:.06em;text-transform:uppercase">Finjustér nuancer</summary>
+        <p style="color:var(--cream-mute);font-size:12px;margin:10px 0 12px">Nuancerne udledes normalt af baggrund og tekst ovenfor. Udledningen blander mod hvidt og vasker mætning ud, så en mættet farvetrappe (fx en navy der bliver mere blå opad) skal angives her. Tomme felter = udledt som hidtil.</p>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end">
+          ${opColorField('Kort/panel','bgColorCard','#181C20',true)}
+          ${opColorField('Hævede flader','bgColorRaised','#22272C',true)}
+          ${opColorField('Rammer/streger','borderColor','#313840',true)}
+          ${opColorField('Sekundær tekst','textColorDim','#BCC2C8',true)}
+          ${opColorField('Dæmpet tekst','textColorMute','#7E868E',true)}
+        </div>
+      </details>
       <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end">
         <div class="field" style="min-width:170px"><label>Font — brødtekst</label>
           <select class="select" data-cfg="fontUi" onchange="opPreviewAppearance()">${opFontOptions(c.fontUi)}</select></div>
@@ -946,11 +957,18 @@ function opSyncColor(key, val){
   opPreviewAppearance();
 }
 
+// HEX-felter i udseende-formularen (ud over accent, som håndteres separat).
+// Skal matche APPEARANCE_COLOR_KEYS i Code.gs og _applyAppearanceOverrides.
+const OP_APPEARANCE_HEX = ['bgColor', 'bgColorCard', 'bgColorRaised', 'borderColor',
+                           'textColor', 'textColorDim', 'textColorMute'];
+
 // Live-preview af HELE udseendet: tema + HEX-overrides + accent + fonte.
 function opPreviewAppearance(){
   const g = k => { const el = opRoot() && opRoot().querySelector('[data-cfg="'+k+'"]'); return el ? el.value.trim() : ''; };
   _applyThemeVars(g('theme') || DEFAULT_THEME);
-  _applyAppearanceOverrides({ bgColor:g('bgColor'), textColor:g('textColor'), fontUi:g('fontUi'), fontDisplay:g('fontDisplay') });
+  const o = { fontUi:g('fontUi'), fontDisplay:g('fontDisplay') };
+  OP_APPEARANCE_HEX.forEach(k => { o[k] = g(k); });
+  _applyAppearanceOverrides(o);
   opPreviewColor(g('primaryColor') || '#8A8A8A');
 }
 
@@ -982,15 +1000,17 @@ async function opWrite(changes, okMsg){
 async function opSaveAppearance(btn){
   const g = k => { const el = opRoot().querySelector('[data-cfg="'+k+'"]'); return el ? el.value.trim() : ''; };
   const accent = g('primaryColor') || '#8A8A8A';
-  const bg = g('bgColor'), text = g('textColor');
-  if (bg && !_isHex(bg)){ toast('Baggrundsfarve skal være #RRGGBB (eller tom)', 'err'); return; }
-  if (text && !_isHex(text)){ toast('Tekstfarve skal være #RRGGBB (eller tom)', 'err'); return; }
-  await withBusy(btn, 'Gemmer…', () => opWrite({
+  const changes = {
     theme: g('theme'),
     primaryColor: accent, primaryColorSoft: _hexLighten(accent, 22), primaryColorDeep: _hexDarken(accent, 22),
-    bgColor: bg, textColor: text,
     fontUi: g('fontUi'), fontDisplay: g('fontDisplay')
-  }, 'Udseende gemt — bandet ser det ved næste login'));
+  };
+  for (const k of OP_APPEARANCE_HEX){
+    const v = g(k);
+    if (v && !_isHex(v)){ toast(k + ' skal være #RRGGBB (eller tom)', 'err'); return; }
+    changes[k] = v;
+  }
+  await withBusy(btn, 'Gemmer…', () => opWrite(changes, 'Udseende gemt — bandet ser det ved næste login'));
 }
 
 async function opSaveRetention(btn){

@@ -1,0 +1,44 @@
+{
+  "_om": "Brandingværdier for Danser med Drenge Tribute, udtrukket 1:1 fra prototypen (DMDT-prototype/index.html). Hver key svarer til en række i Settings-fanen — se settings-template.md. Filen er bevidst backend-uafhængig, så den også kan bruges når appen flyttes fra Apps Script til Supabase.",
+  "_kilde": "DMDT-prototype/index.html — :root (linje 12-19), RIDER_INTRO/RIDERS (1470-1507), kontrakt- og honorar-footere (1552-1611, 2590-2595)",
+  "_udelader": "seedPassword og CPR hører ikke i versionsstyring. logoFileId er Drive-specifik — upload dmd-logo.png via operatør-panelet i stedet.",
+
+  "bandName": "Danser med Drenge Tribute",
+  "bandShortName": "DMDT",
+  "bandTagline": "Tribute",
+  "emailDomain": "dmdt.dk",
+
+  "_farver": "Prototypens navy/amber-palette. bgColor* og textColor* skal sættes eksplicit — den automatiske udledning blander mod hvidt og gør navy-trappen grå.",
+  "theme": "kul",
+  "primaryColor": "#E8A867",
+  "primaryColorSoft": "#F0BE8A",
+  "primaryColorDeep": "#C68642",
+  "bgColor": "#08111F",
+  "bgColorCard": "#0F213C",
+  "bgColorRaised": "#16304F",
+  "borderColor": "#1F3D5F",
+  "textColor": "#F5EDE0",
+  "textColorDim": "#D9CFBE",
+  "textColorMute": "#9A9285",
+  "fontUi": "Inter",
+  "fontDisplay": "Instrument Serif",
+
+  "_rider": "Tom = brug DEFAULT_RIDER_TEMPLATES i public/js/05-honorar.js, som allerede er prototypens rider ord for ord (verificeret: 23/23 tekster identiske). Kontaktnavne og telefonnumre indsættes fra felterne nedenfor via pladsholderne __BAND_NAME__, __TECH_NAME__, __TECH_PHONE__, __CONTACT_NAME__ og __CONTACT_PHONE__. Sæt kun denne key hvis rideren skal afvige fra prototypens.",
+  "riderTemplates": "",
+
+  "contactName": "Jesper Steensbeck",
+  "contactEmail": "jesper@steensbeck.dk",
+  "contactPhone": "60 24 60 60",
+  "contactAddress": "Frejasvej 65\n6840 Oksbøl",
+  "techContactName": "Henning Thiim",
+  "techContactPhone": "30 26 97 88",
+
+  "_bank": "bankKto står som 1465171 i prototypen, men som 0001465171 i settings-template.md. Verificér hvad banken bruger før kontrakter udsendes.",
+  "bankName": "Sparekassen for Nr. Nebel og Omegn",
+  "bankReg": "9682",
+  "bankKto": "1465171",
+  "payeeName": "Jesper Steensbeck",
+  "payeeAddress": "Frejasvej 65\n6840 Oksbøl",
+
+  "invoiceFolderName": "DMDT Fakturaer"
+}

@@ -63,6 +63,14 @@ const SETTINGS_DEFAULTS = {
   primaryColorDeep: '#5C5C5C',
   bgColor: '',        // valgfri HEX-override af baggrund (tom = brug temaets)
   textColor: '',      // valgfri HEX-override af tekstfarve
+  // Finjustering af de nuancer der ellers udledes af bgColor/textColor. Tomme =
+  // brug den udledte værdi. Nødvendige for en mættet farvetrappe (fx navy), som
+  // _hexLighten ikke kan gengive, fordi den blander mod hvidt.
+  bgColorCard: '',    // --ink        (kort/panel-baggrund)
+  bgColorRaised: '',  // --ink-soft   (hævede flader, inputs)
+  borderColor: '',    // --ink-line   (rammer/streger)
+  textColorDim: '',   // --cream-dim  (sekundær tekst)
+  textColorMute: '',  // --cream-mute (dæmpet tekst, labels)
   fontUi: '',         // valgfri font-override (UI/brødtekst) — key fra VALID_FONTS
   fontDisplay: '',    // valgfri font-override (overskrifter) — key fra VALID_FONTS
   logoFileId: '',
@@ -94,6 +102,7 @@ const PUBLIC_CONFIG_KEYS = [
   'bandName', 'bandShortName', 'bandTagline', 'emailDomain',
   'theme', 'primaryColor', 'primaryColorSoft', 'primaryColorDeep',
   'bgColor', 'textColor', 'fontUi', 'fontDisplay',
+  'bgColorCard', 'bgColorRaised', 'borderColor', 'textColorDim', 'textColorMute',
   'contactName', 'contactEmail', 'contactPhone', 'contactAddress',
   'techContactName', 'techContactPhone',
   'riderTemplates'   // pr. kontrakttype rider-skabeloner; ikke følsomt (sendes alligevel til arrangører)
@@ -3902,7 +3911,9 @@ function actRegisterTenant(p) {
       const tcfg = getBandConfig();
       CURRENT_BAND_ID = newId; _invalidateBandConfigCache();
       const COPY_KEYS = ['theme', 'primaryColor', 'primaryColorSoft', 'primaryColorDeep',
-                         'bgColor', 'textColor', 'fontUi', 'fontDisplay', 'riderText', 'riderTemplates', 'bandTagline'];
+                         'bgColor', 'textColor', 'fontUi', 'fontDisplay',
+                         'bgColorCard', 'bgColorRaised', 'borderColor', 'textColorDim', 'textColorMute',
+                         'riderText', 'riderTemplates', 'bandTagline'];
       const changes = {};
       COPY_KEYS.forEach(k => { if (tcfg[k] !== undefined && String(tcfg[k]) !== '') changes[k] = tcfg[k]; });
       if (Object.keys(changes).length) _setSettings(changes);
@@ -4674,6 +4685,16 @@ const VALID_THEMES = ['kul', 'grafit', 'beton', 'stål', 'tåge'];
 // Tilladte font-keys (skal matche FONT_OPTIONS i index.html + de loadede Google Fonts).
 const VALID_FONTS = ['Inter', 'Space Grotesk', 'IBM Plex Sans', 'Instrument Serif', 'IBM Plex Serif', 'Fraunces'];
 
+// Alle HEX-felter i udseende-opsætningen. Tom værdi = ryd override (følg tema).
+// Skal matche _applyAppearanceOverrides i 01-core.js.
+const APPEARANCE_COLOR_KEYS = [
+  'primaryColor', 'primaryColorSoft', 'primaryColorDeep',
+  'bgColor', 'bgColorCard', 'bgColorRaised', 'borderColor',
+  'textColor', 'textColorDim', 'textColorMute'
+];
+// Whitelist for actAdminSaveAppearance — forhindrer overskrivning af andre settings.
+const APPEARANCE_KEYS = ['theme'].concat(APPEARANCE_COLOR_KEYS, ['fontUi', 'fontDisplay']);
+
 /**
  * Gemmer tema og accentfarver til Settings-sheet.
  * Kun whitelistede keys tillades — forhindrer overskrivning af andre settings.
@@ -4715,16 +4736,15 @@ function actAdminResetMemberPassword(p) {
 
 function actAdminSaveAppearance(p) {
   _requireAdminOrOperator(p);
-  const allowed = { theme: 1, primaryColor: 1, primaryColorSoft: 1, primaryColorDeep: 1, bgColor: 1, textColor: 1, fontUi: 1, fontDisplay: 1 };
   const changes = {};
-  Object.keys(allowed).forEach(k => {
+  APPEARANCE_KEYS.forEach(k => {
     if (p[k] !== undefined) changes[k] = String(p[k]).trim();
   });
   if (changes.theme && VALID_THEMES.indexOf(changes.theme) === -1) {
     return { ok: false, error: 'Ukendt tema: ' + changes.theme };
   }
   // HEX-farver: tom værdi = ryd override; ellers skal det være #RRGGBB.
-  ['primaryColor', 'bgColor', 'textColor'].forEach(k => {
+  APPEARANCE_COLOR_KEYS.forEach(k => {
     if (changes[k] && !/^#[0-9A-Fa-f]{6}$/.test(changes[k])) {
       throw new Error('Ugyldig farve i ' + k + ' — brug hex-format #RRGGBB');
     }
