@@ -7,7 +7,23 @@ compatibility_date = "2024-11-01"
 directory = "../public"
 binding = "ASSETS"
 
-# Session-store (id indsættes af `wrangler kv namespace create SESSIONS`)
+# Datalag: ét SQLite-backed Durable Object pr. band + ét master-objekt.
+# Namespaces oprettes af selve deployet via [[migrations]] nedenfor — der er
+# ingen forberedende `create`-kommando.
+[[durable_objects.bindings]]
+name = "BAND"
+class_name = "BandDO"
+
+[[durable_objects.bindings]]
+name = "MASTER"
+class_name = "MasterDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["BandDO", "MasterDO"]
+
+# Kun rate-limit tilbage i KV. Sessioner er flyttet ind i BandDO, fordi
+# gratisplanens 1.000 KV-skrivninger/dag ellers ramte muren ved 6-7 bands.
 [[kv_namespaces]]
 binding = "SESSIONS"
 id = "c0a52403e89a44ea95e9f94c2e4e900e"

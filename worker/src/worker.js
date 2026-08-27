@@ -1,5 +1,15 @@
 // Band-app edge-proxy. Browseren taler kun med denne Worker (samme origin).
 // Hemmeligheder (APP_TOKEN) + login-credential lever server-side; browseren får kun en httpOnly-cookie.
+//
+// Datalaget er under migrering fra Apps Script/Sheets til Durable Objects — se
+// planen i ~/.claude/plans. Klasserne skal eksporteres fra Workerens
+// indgangspunkt for at Cloudflare kan instantiere dem.
+
+import { BandDO } from './do/band.js';
+import { MasterDO } from './do/master.js';
+import { selftest } from './do/selftest.js';
+
+export { BandDO, MasterDO };
 
 const SESSION_TTL_SEC = 8 * 60 * 60; // 8 timer, fornyes ved aktivitet
 
@@ -7,6 +17,12 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     try {
+      // Selvtest af datalaget. Kun tilgængelig når SELFTEST-varen er sat, og
+      // den sættes kun via `wrangler dev --var SELFTEST:on`, aldrig i wrangler.toml.
+      if (url.pathname === '/api/_selftest') {
+        if (env.SELFTEST !== 'on') return withSecHeaders(json({ ok: false, error: 'Ikke fundet' }, 404));
+        return withSecHeaders(json(await selftest(env)));
+      }
       if (url.pathname === '/api/login')           return withSecHeaders(await apiLogin(request, env));
       if (url.pathname === '/api/operator-login')  return withSecHeaders(await apiOperatorLogin(request, env));
       if (url.pathname === '/api/booker-login')    return withSecHeaders(await apiBookerLogin(request, env));

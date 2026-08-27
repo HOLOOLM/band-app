@@ -3,9 +3,15 @@
   "configurations": [
     {
       "name": "band-app",
-      "runtimeExecutable": "npx",
-      "runtimeArgs": ["wrangler", "dev", "--config", "worker/wrangler.toml", "--port", "8787"],
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["worker/dev.mjs", "--port", "8787"],
       "port": 8787
+    },
+    {
+      "name": "band-app-selftest",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["worker/dev.mjs", "--port", "8788", "--var", "SELFTEST:on"],
+      "port": 8788
     },
     {
       "name": "rider-demo",
