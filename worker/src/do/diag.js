@@ -68,6 +68,20 @@ export async function diag(env) {
 
   return {
     ok: true,
+    // Kun TILSTEDEVÆRELSE, aldrig værdien. Uden disse kan man ikke se om en
+    // `wrangler secret put` faktisk nåede frem, og det er ellers umuligt at
+    // verificere udefra: intet endpoint afslører en hemmelighed, og ingen
+    // kalder den nye kode endnu.
+    hemmeligheder: {
+      MASTER_SECRET: !!env.MASTER_SECRET,
+      CPR_KEY: !!env.CPR_KEY,
+      DIAG_TOKEN: !!env.DIAG_TOKEN,
+      SIDECAR_TOKEN: !!env.SIDECAR_TOKEN,   // først nødvendig i Fase 4
+      RESEND_API_KEY: !!env.RESEND_API_KEY  // først nødvendig i Fase 5
+    },
+    // CPR_KEY skal være præcis 32 bytes base64 — en forkert længde ville først
+    // vise sig når nogen gemte et CPR, altså på det værst mulige tidspunkt.
+    cprKeyGyldig: cprKeyGyldig(env),
     euJurisdiktion: jurisdictionActive(env),
     doLagerVirker: lagerOk,
     doSkemaVersion: skemaVersion,
@@ -77,6 +91,21 @@ export async function diag(env) {
     bemaerk: 'Loftet på Workers Free er 10 ms CPU pr. request. Tal her er ' +
              'vægur-tid målt i produktion; CPU-tid er lavere, da await ikke tæller med.'
   };
+}
+
+/**
+ * Er CPR_KEY et gyldigt 32-byte base64? Returnerer en beskrivelse, ikke nøglen.
+ * En for kort nøgle ville ellers først fejle den dag et CPR skulle gemmes.
+ */
+function cprKeyGyldig(env) {
+  const raw = String(env.CPR_KEY || '');
+  if (!raw) return 'mangler';
+  try {
+    const n = atob(raw).length;
+    return n === 32 ? true : `forkert længde: ${n} bytes, skal være 32`;
+  } catch (e) {
+    return 'ikke gyldig base64';
+  }
 }
 
 function vurder(valgt, alle) {
