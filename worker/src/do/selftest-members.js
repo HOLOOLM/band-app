@@ -72,9 +72,13 @@ export async function memberChecks(ydreEnv, ok) {
   const emails = ['ny1@test.dk', 'ny2@test.dk'];
   const oprettede = [];
   for (let i = 0; i < 2; i++) {
-    // Ryd op fra tidligere kørsler, så testen er idempotent.
+    // Ryd op fra tidligere kørsler, så testen er idempotent. Identiteten i
+    // master SKAL også ryddes: findes den, genbruger saveMember med rette den
+    // eksisterende adgangskode og returnerer INGEN startkode — korrekt
+    // produktionsadfærd, men det ville skjule det testen skal måle.
     const eks = await bandA.findMemberByEmail(emails[i]);
     if (eks) await bandA.deleteMember(eks.id);
+    await master.removeIdentityBand(emails[i], A);
     const r = await kaldA('saveMember',
       { member: { name: navne[i], email: emails[i], instrument: 'Bas' } }, adminCreds);
     oprettede.push(r);
@@ -150,6 +154,7 @@ export async function memberChecks(ydreEnv, ok) {
   for (const [stub, bid] of [[bandA, A], [bandB, B]]) {
     const eks = await stub.findMemberByEmail(DELT);
     if (eks) await stub.deleteMember(eks.id);
+    await master.removeIdentityBand(DELT, bid);
   }
   const iA = await kaldA('saveMember', { member: { name: 'Delt Musiker', email: DELT } }, adminCreds);
   ok('SSO: medlem oprettet i band A', iA.ok === true, iA.error);

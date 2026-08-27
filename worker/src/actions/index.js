@@ -14,6 +14,10 @@ import {
   getMembers, saveMember, deleteMember, resetPassword,
   memberUpdateProfile, exportMyData
 } from './members.js';
+import {
+  getContracts, getContract, saveContract,
+  changeContractStatus, deleteContract, getDashboard
+} from './contracts.js';
 
 // scope: hvilket lager action'en får udleveret
 //   'band'      → ctx.band er bandets DO-stub (kræver gyldigt bandId)
@@ -46,7 +50,17 @@ export const ACTIONS = {
   deleteMember:        { scope: 'band', auth: 'admin',  fn: deleteMember },
   resetPassword:       { scope: 'band', auth: 'admin',  fn: resetPassword },
   memberUpdateProfile: { scope: 'band', auth: 'member', fn: memberUpdateProfile },
-  exportMyData:        { scope: 'band', auth: 'member', fn: exportMyData }
+  exportMyData:        { scope: 'band', auth: 'member', fn: exportMyData },
+
+  // ── Fase 3c ──────────────────────────────────────────────────────────────
+  // getDashboard er 'admin' som i originalen (Code.gs:1978), selvom den også
+  // viser medlemmets eget honorar — den indeholder bandets samlede økonomi.
+  getContracts:         { scope: 'band', auth: 'admin', fn: getContracts },
+  getContract:          { scope: 'band', auth: 'admin', fn: getContract },
+  saveContract:         { scope: 'band', auth: 'admin', fn: saveContract },
+  changeContractStatus: { scope: 'band', auth: 'admin', fn: changeContractStatus },
+  deleteContract:       { scope: 'band', auth: 'admin', fn: deleteContract },
+  getDashboard:         { scope: 'band', auth: 'admin', fn: getDashboard }
 };
 
 export const VALID_SCOPES = ['band', 'master', 'identity', 'none'];

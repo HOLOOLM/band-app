@@ -93,6 +93,15 @@ export async function registerIdentity(env, email, bandId, pf) {
 }
 
 /**
+ * Fjerner koblingen mellem en e-mail og et band. Kaldes når et medlem slettes.
+ * Identiteten selv bliver stående så længe e-mailen hører til andre bands.
+ */
+export async function removeIdentityBand(env, email, bandId) {
+  const master = masterStub(env);
+  return master.removeIdentityBand(String(email || '').toLowerCase().trim(), bandId);
+}
+
+/**
  * Den kanoniske hash for en e-mail. Bruges KUN til reparation og til de
  * tværgående actions — aldrig på en login-sti.
  */

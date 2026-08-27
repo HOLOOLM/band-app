@@ -146,6 +146,29 @@ export class MasterDO extends DurableObject {
   }
 
   /**
+   * Fjerner koblingen mellem en e-mail og ét band. Kaldes når et medlem slettes,
+   * så kryds-band-opslag ikke fortsætter med at spørge et band personen ikke er
+   * i længere.
+   *
+   * Selve identiteten (og dermed passwordet) bliver stående så længe e-mailen
+   * hører til mindst ét band — musikeren skal kunne logge ind i sine øvrige
+   * bands. Er det sidste band fjernet, ryddes identiteten helt: at beholde en
+   * password-hash for en person der ikke længere er i systemet, er
+   * unødvendig opbevaring af persondata.
+   */
+  async removeIdentityBand(email, bandId) {
+    await this.#ready();
+    const e = String(email || '').toLowerCase().trim();
+    this.db.run('DELETE FROM identity_bands WHERE email = ? AND band_id = ?', e, bandId);
+    const tilbage = Number(this.db.value(
+      'SELECT count(*) AS c FROM identity_bands WHERE email = ?', e) ?? 0);
+    if (tilbage === 0) {
+      this.db.run('DELETE FROM identities WHERE email = ?', e);
+    }
+    return { ok: true, bandsTilbage: tilbage };
+  }
+
+  /**
    * Hvilke bands en e-mail hører til. Grundlaget for kryds-band-fan-out.
    * Kun bands med cross_band slået til returneres, så fan-out'en respekterer
    * flaget uden at kalderen skal huske det.

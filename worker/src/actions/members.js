@@ -17,7 +17,7 @@
 
 import { sha256hex, newPasswordFields, pwIterations, randomBytes } from '../lib/crypto.js';
 import { publicMember } from '../auth/verify.js';
-import { registerIdentity, syncPasswordAcrossBands } from '../auth/identity.js';
+import { registerIdentity, syncPasswordAcrossBands, removeIdentityBand } from '../auth/identity.js';
 import { userError } from '../lib/errors.js';
 
 /**
@@ -139,12 +139,28 @@ export async function saveMember(ctx) {
  * admin fjerne sin egen adgang og efterlade bandet uden administrator.
  */
 export async function deleteMember(ctx) {
-  const { band, member, p } = ctx;
+  const { env, band, bandId, member, p } = ctx;
   const id = String(p.id || '');
   if (!id) return { ok: false, error: 'Mangler id' };
   if (String(member.id) === id) return { ok: false, error: 'Du kan ikke slette dig selv.' };
+
+  // E-mailen skal læses FØR sletningen, ellers er den væk når vi skal rydde op
+  // i identiteten.
+  const target = await band.findMemberById(id);
   const r = await band.deleteMember(id);
   if (!r.ok) return { ok: false, error: 'Medlemmet findes ikke' };
+
+  // Fjern koblingen i master, så kryds-band-opslag ikke fortsætter med at
+  // spørge et band personen ikke er i længere. Fejler det, er medlemmet stadig
+  // slettet — koblingen er en pegepind, ikke data i sig selv.
+  if (target && target.email) {
+    try {
+      await removeIdentityBand(env, target.email, bandId);
+    } catch (e) {
+      console.warn('Kunne ikke rydde identitetskobling for ' + bandId + ': ' +
+                   (e && e.message || e));
+    }
+  }
   return { ok: true };
 }
 

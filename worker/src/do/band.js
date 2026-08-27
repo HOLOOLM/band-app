@@ -293,6 +293,239 @@ export class BandDO extends DurableObject {
     return { ok };
   }
 
+  // ── Kontrakter ───────────────────────────────────────────────────────────
+
+  async listContracts() {
+    await this.#ready();
+    return this.db.rows('SELECT * FROM contracts ORDER BY date DESC');
+  }
+
+  async getContract(id) {
+    await this.#ready();
+    const c = this.db.one('SELECT * FROM contracts WHERE id = ?', String(id));
+    if (!c) return null;
+    const attendees = this.db.rows(
+      'SELECT * FROM attendances WHERE contract_id = ?', String(id));
+    return { contract: c, attendees };
+  }
+
+  /**
+   * Gemmer en kontrakt med deltagere. HELE operationen er én transaktion:
+   * id-omdøbning, kontraktrækken og deltagersynkroniseringen. Ellers kunne en
+   * afbrudt gemning efterlade en kontrakt uden deltagere eller omvendt.
+   *
+   * Fire ting sker her, og de har hver deres faldgrube:
+   *
+   *   1. OMDØBNING. Kontrakt-id er brugerredigerbart (det er kontraktnummeret),
+   *      så et gem kan flytte rækken til et nyt id. Alle attendances skal følge
+   *      med, ellers bliver de forældreløse.
+   *   2. UTILSIGTET OVERSKRIVNING. Er der ingen originalId, opretter brugeren en
+   *      ny kontrakt — findes nummeret allerede, skal vi afvise frem for at
+   *      skrive oven i en anden aftale.
+   *   3. OPTIMISTISK LÅSNING. To admins med samme kontrakt åben må ikke kunne
+   *      overskrive hinanden lydløst.
+   *   4. DELTAGERSYNKRONISERING. Se kommentaren nedenfor — her afviger vi
+   *      bevidst fra originalen.
+   */
+  async saveContract(data, attendees, originalId, expectedUpdatedAt) {
+    await this.#ready();
+    const providedId = String(data.id || '').trim();
+    const origId = String(originalId || '').trim();
+    let svar = null;
+
+    this.ctx.storage.transactionSync(() => {
+      // ── 1. Omdøbning ─────────────────────────────────────────────────────
+      let arbejdsId = providedId;
+      if (origId && providedId && origId !== providedId) {
+        const orig = this.db.one('SELECT id FROM contracts WHERE id = ?', origId);
+        if (!orig) {
+          svar = { ok: false, error: 'Original kontrakt ikke fundet (id: ' + origId + ')' };
+          return;
+        }
+        if (this.db.one('SELECT id FROM contracts WHERE id = ?', providedId)) {
+          svar = { ok: false, error: 'Kontrakt-nr "' + providedId + '" er allerede i brug' };
+          return;
+        }
+        this.db.run('UPDATE contracts SET id = ? WHERE id = ?', providedId, origId);
+        // Cascade. I Sheets krævede dette en kolonnescanning række for række
+        // (Code.gs:1889); her er det én sætning.
+        this.db.run('UPDATE attendances SET contract_id = ? WHERE contract_id = ?',
+          providedId, origId);
+      }
+
+      const eksisterende = arbejdsId
+        ? this.db.one('SELECT id, updated_at FROM contracts WHERE id = ?', arbejdsId)
+        : null;
+
+      // ── 2. Beskyt mod utilsigtet overskrivning ───────────────────────────
+      if (eksisterende && !origId) {
+        svar = { ok: false, error: 'Kontrakt-nr "' + arbejdsId +
+                 '" er allerede i brug. Vælg et andet nummer.' };
+        return;
+      }
+
+      // ── 3. Optimistisk låsning ──────────────────────────────────────────
+      if (eksisterende && expectedUpdatedAt) {
+        const server = Date.parse(eksisterende.updatedAt || '') || 0;
+        const klient = Date.parse(expectedUpdatedAt) || 0;
+        if (server && klient && server > klient) {
+          svar = { ok: false, conflict: true,
+                   error: 'Kontrakten er ændret af en anden bruger siden du åbnede den. Genindlæs og prøv igen.' };
+          return;
+        }
+      }
+
+      const nu = new Date().toISOString();
+      const felter = {
+        type: data.type || 'Spillested',
+        status: data.status || 'udkast',
+        arrangoer: JSON.stringify(data.arrangoer || {}),
+        venue: JSON.stringify(data.venue || {}),
+        date: data.date ? String(data.date).slice(0, 10) : '',
+        getIn: data.getIn || '',
+        soundcheck: data.soundcheck || '',
+        showtimeFrom: data.showtimeFrom || '',
+        showtimeTo: data.showtimeTo || '',
+        sets: Number(data.sets) || 0,
+        setMinutes: Number(data.setMinutes) || 0,
+        musicianCount: Number(data.musicianCount) || 0,
+        crewCount: Number(data.crewCount) || 0,
+        guestCount: Number(data.guestCount) || 0,
+        honorar: Number(data.honorar) || 0,
+        paymentTerms: data.paymentTerms || '',
+        paymentTermsOther: data.paymentTermsOther || '',
+        notes: data.notes || '',
+        memberNote: data.memberNote || '',
+        updatedAt: nu
+      };
+
+      if (!eksisterende) {
+        if (!arbejdsId) arbejdsId = 'c' + this.#nextCounterSync('contract');
+        this.db.insert('contracts', Object.assign({ id: arbejdsId, createdAt: nu }, felter));
+      } else {
+        this.db.update('contracts', felter, 'id = ?', arbejdsId);
+      }
+
+      this.#syncAttendances(arbejdsId, attendees || []);
+      svar = { ok: true, id: arbejdsId };
+    });
+
+    return svar;
+  }
+
+  /**
+   * Synkroniserer deltagerlisten for en kontrakt.
+   *
+   * HER AFVIGER VI BEVIDST FRA ORIGINALEN. Code.gs:1929 sletter ALLE
+   * attendance-rækker for kontrakten og indsætter nye med status 'invited' og
+   * tomme confirmedAt/checkedInAt. Konsekvensen er, at det at rette en stavefejl
+   * i spillestedets navn nulstiller samtlige medlemmers bekræftelser og smider
+   * de cachede køreafstande væk. Det er datatab uden formål — klienten sender
+   * kun {memberId, share}, så den har ingen viden om tilstanden den overskriver.
+   *
+   * Her bevares tilstanden for de medlemmer der FORTSAT er på jobbet: kun
+   * andelen opdateres. Nye medlemmer får en frisk 'invited'-række, og medlemmer
+   * der er fjernet, får deres række slettet. Rosteren og andelene synkroniseres
+   * altså præcis som før — men en bekræftelse går kun tabt, hvis medlemmet
+   * faktisk bliver taget af jobbet.
+   */
+  #syncAttendances(contractId, attendees) {
+    const cid = String(contractId);
+    const eksisterende = this.db.rows(
+      'SELECT * FROM attendances WHERE contract_id = ?', cid);
+    const efterMedlem = new Map();
+    for (const a of eksisterende) efterMedlem.set(String(a.memberId), a);
+
+    const oenskede = new Set();
+    let i = 0;
+    for (const a of attendees) {
+      const memberId = String(a.memberId || '');
+      if (!memberId || oenskede.has(memberId)) continue;   // dedup på memberId
+      oenskede.add(memberId);
+      const share = Number(a.share) || 0;
+      const gammel = efterMedlem.get(memberId);
+      if (gammel) {
+        // Bevar status, bekræftelse, check-in og afstandsdata.
+        this.db.run('UPDATE attendances SET share = ? WHERE id = ?', share, gammel.id);
+      } else {
+        this.db.insert('attendances', {
+          id: 'a' + this.#nextCounterSync('attendance') + '_' + (i++),
+          contractId: cid,
+          memberId,
+          share,
+          status: 'invited',
+          confirmedAt: '',
+          checkedInAt: ''
+        });
+      }
+    }
+
+    // Fjernede medlemmer.
+    for (const a of eksisterende) {
+      if (!oenskede.has(String(a.memberId))) {
+        this.db.run('DELETE FROM attendances WHERE id = ?', a.id);
+      }
+    }
+  }
+
+  /** Counter-optælling inde i en igangværende transaktion (synkron). */
+  #nextCounterSync(name) {
+    this.db.run(
+      `INSERT INTO counters (name, next) VALUES (?, 1)
+         ON CONFLICT(name) DO UPDATE SET next = next + 1`,
+      name
+    );
+    return Number(this.db.value('SELECT next FROM counters WHERE name = ?', name));
+  }
+
+  async changeContractStatus(id, status) {
+    await this.#ready();
+    const changed = this.db.update('contracts',
+      { status, updatedAt: new Date().toISOString() }, 'id = ?', String(id));
+    return { ok: changed > 0 };
+  }
+
+  async deleteContract(id) {
+    await this.#ready();
+    let fandtes = false;
+    this.ctx.storage.transactionSync(() => {
+      this.db.run('DELETE FROM contracts WHERE id = ?', String(id));
+      fandtes = this.db.changes() > 0;
+      // Attendances har ON DELETE CASCADE i skemaet, men SQLite håndhæver kun
+      // fremmednøgler hvis PRAGMA foreign_keys er slået til for forbindelsen.
+      // Vi sletter derfor eksplicit frem for at stole på det.
+      if (fandtes) this.db.run('DELETE FROM attendances WHERE contract_id = ?', String(id));
+    });
+    return { ok: fandtes };
+  }
+
+  /**
+   * Rådata til dashboardet i ÉT kald. Aggregeringen sker i kalderen, så
+   * svarformen kan holdes bit-for-bit identisk med i dag.
+   */
+  async dashboardData(myMemberId) {
+    await this.#ready();
+    return {
+      contracts: this.db.rows('SELECT * FROM contracts'),
+      members: this.db.rows(
+        'SELECT id, name, instrument, category FROM members ORDER BY name COLLATE NOCASE'),
+      attendances: this.db.rows('SELECT contract_id, member_id, share, status FROM attendances'),
+      memberCount: Number(this.db.value('SELECT count(*) AS c FROM members') ?? 0),
+      myMemberId: myMemberId || null
+    };
+  }
+
+  /** Opsummering til operatørlisten i master. Kaldes efter kontraktændringer. */
+  async summaryStats() {
+    await this.#ready();
+    const iDag = new Date().toISOString().slice(0, 10);
+    return {
+      members: Number(this.db.value('SELECT count(*) AS c FROM members') ?? 0),
+      upcoming: Number(this.db.value(
+        "SELECT count(*) AS c FROM contracts WHERE date >= ?", iDag) ?? 0)
+    };
+  }
+
   // ── Login-forsøg (rate-limit pr. e-mail) ─────────────────────────────────
   // Erstatter CacheService-baseret lockout (Code.gs:1602-1609). Ligger i
   // objektet, så tælleren er pr. band og ikke deles med andre tenants.
@@ -449,6 +682,30 @@ export class BandDO extends DurableObject {
    * findes på nogen band-tabel — den påstand hele isolationsmodellen hviler på.
    * Returnerer kun metadata, aldrig rækkeindhold.
    */
+  /**
+   * Sætter felter på én attendance-række. KUN til selvtesten, som skal kunne
+   * simulere at et medlem har bekræftet, før den kan bevise at et gem ikke
+   * nulstiller bekræftelsen. Der findes ingen produktionssti hertil — de rigtige
+   * ændringer sker gennem confirmAttendance og afstandsberegningen i Fase 3d.
+   */
+  async updateAttendanceForTest(id, patch) {
+    await this.#ready();
+    const changed = this.db.update('attendances', patch, 'id = ?', String(id));
+    return { ok: changed > 0 };
+  }
+
+  /**
+   * Antal attendance-rækker der peger på en kontrakt der ikke findes. Skal
+   * altid være 0 — en forældreløs række indgår i honorarfordeling og dashboard
+   * og ville trække forkerte tal med sig.
+   */
+  async countOrphanAttendances() {
+    await this.#ready();
+    return Number(this.db.value(
+      `SELECT count(*) AS c FROM attendances a
+        WHERE NOT EXISTS (SELECT 1 FROM contracts c WHERE c.id = a.contract_id)`) ?? 0);
+  }
+
   async debugColumns(tables) {
     await this.#ready();
     const out = {};

@@ -39,6 +39,22 @@ export async function runAction(env, actionName, p, creds) {
       // vi validerer bandId her.
       ctx.band = bandStub(env, bandId);
       ctx.bandId = bandId;
+      // Lader en action opdatere operatørlistens tal i master efter en
+      // skrivning. Bevidst opt-in frem for automatisk: kun de actions der
+      // ændrer medlems- eller kontraktantal behøver det, og et kald til master
+      // hører ikke på en læsesti (se arkitekturreglen i planens Fase 1).
+      //
+      // Fejler det, er den egentlige handling stadig gennemført — statistikken
+      // er kosmetisk og bliver rettet ved næste skrivning.
+      ctx.reportStats = async () => {
+        try {
+          const s = await ctx.band.summaryStats();
+          await masterStub(env).reportStats(bandId, s.members, s.upcoming);
+        } catch (e) {
+          console.warn('Kunne ikke opdatere opsummering for ' + bandId + ': ' +
+                       (e && e.message || e));
+        }
+      };
     } else if (def.scope === 'master') {
       ctx.master = masterStub(env);
     }

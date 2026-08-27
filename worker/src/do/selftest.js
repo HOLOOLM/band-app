@@ -13,6 +13,7 @@ import { bandStub, masterStub, fanOut, jurisdictionActive } from '../lib/address
 import { authChecks } from './selftest-auth.js';
 import { actionChecks } from './selftest-actions.js';
 import { memberChecks } from './selftest-members.js';
+import { contractChecks } from './selftest-contracts.js';
 
 const BAND_TABLES = ['members', 'contracts', 'attendances', 'invoices',
                      'bookings', 'settings', 'login_log', 'sessions',
@@ -32,6 +33,9 @@ export async function selftest(env) {
 
     // ── Medlemmer, startkoder, SSO og GDPR (Fase 3b) ──────────────────────
     await memberChecks(env, ok);
+
+    // ── Kontrakter og dashboard (Fase 3c) ─────────────────────────────────
+    await contractChecks(env, ok);
 
     // ── Skema løftes ved første adgang ────────────────────────────────────
     const master = masterStub(env);
