@@ -18,6 +18,7 @@ import { jobChecks } from './selftest-jobs.js';
 import { honorarChecks } from './selftest-honorar.js';
 import { adminChecks } from './selftest-admin.js';
 import { bookingChecks } from './selftest-bookings.js';
+import { pdfChecks } from './selftest-pdf.js';
 
 const BAND_TABLES = ['members', 'contracts', 'attendances', 'invoices',
                      'bookings', 'settings', 'login_log', 'sessions',
@@ -52,6 +53,9 @@ export async function selftest(env) {
 
     // ── Bookings, e-signatur og booker-portal (Fase 3g, 3h) ───────────────
     await bookingChecks(env, ok);
+
+    // ── PDF via sidecar og natlig oprydning (Fase 3f, 6) ──────────────────
+    await pdfChecks(env, ok);
 
     // ── Skema løftes ved første adgang ────────────────────────────────────
     const master = masterStub(env);

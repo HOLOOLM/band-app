@@ -1333,6 +1333,30 @@ export class BandDO extends DurableObject {
    * påstand om "vi rører ikke databasen" er ellers kun en hensigt, og det var
    * netop den hensigt _ensureDistance (Code.gs:516) brød.
    */
+  /**
+   * Natlig oprydning. Kaldes af cron'en.
+   *
+   * `loginCutoff` null betyder "behold alt" — bandets opbevaringspolitik er
+   * deres eget valg, og en tom indstilling må ikke tolkes som "slet".
+   */
+  async runRetention(loginCutoff, cacheCutoff) {
+    await this.#ready();
+    let sessioner = 0, loginLog = 0, cache = 0;
+    this.ctx.storage.transactionSync(() => {
+      this.db.run('DELETE FROM sessions WHERE expires_at <= ?', new Date().toISOString());
+      sessioner = this.db.changes();
+      if (loginCutoff) {
+        this.db.run('DELETE FROM login_log WHERE ts < ?', loginCutoff);
+        loginLog = this.db.changes();
+      }
+      if (cacheCutoff) {
+        this.db.run('DELETE FROM distance_cache WHERE cached_at < ?', cacheCutoff);
+        cache = this.db.changes();
+      }
+    });
+    return { ok: true, sessioner, loginLog, cache };
+  }
+
   async writeCounter() {
     await this.#ready();
     return Number(this.db.value('SELECT total_changes() AS c') ?? 0);

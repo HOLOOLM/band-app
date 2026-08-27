@@ -28,6 +28,12 @@ new_sqlite_classes = ["BandDO", "MasterDO"]
 binding = "SESSIONS"
 id = "c0a52403e89a44ea95e9f94c2e4e900e"
 
+# Natlig oprydning: udløbne sessioner, gammel login-log (efter bandets egen
+# opbevaringspolitik) og forældet afstands-cache. Cron virker på Free.
+# 02:00 UTC = 03:00 dansk vintertid / 04:00 sommertid.
+[triggers]
+crons = ["0 2 * * *"]
+
 # Ikke-hemmelige variabler
 [vars]
 # Password-KDF. 10000 er verificeret i produktion 2026-08-27: et enkelt hash

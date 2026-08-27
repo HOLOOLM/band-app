@@ -12,6 +12,7 @@ import { benchmark } from './do/bench.js';
 import { diag, diagBillig, diagAuthorized, maalEtHash, iterFraUrl } from './do/diag.js';
 import { bandStub } from './lib/addressing.js';
 import { buildIcal } from './actions/crossband.js';
+import { scheduled as runScheduled } from './scheduled.js';
 
 export { BandDO, MasterDO };
 
@@ -94,6 +95,11 @@ export default {
     }
     // Alt andet = statisk frontend
     return withSecHeaders(await env.ASSETS.fetch(request));
+  },
+
+  // Natlig oprydning (Fase 6). Se scheduled.js for hvad der ryddes og hvorfor.
+  async scheduled(event, env, ctx) {
+    return runScheduled(event, env, ctx);
   }
 };
 

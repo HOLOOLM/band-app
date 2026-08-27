@@ -49,6 +49,7 @@ import {
   operatorListBookers, operatorSaveBooker, operatorDeleteBooker,
   operatorResetBookerPassword
 } from './booker.js';
+import { archiveInvoiceToDrive } from './pdf.js';
 
 // scope: hvilket lager action'en får udleveret
 //   'band'      → ctx.band er bandets DO-stub (kræver gyldigt bandId)
@@ -173,7 +174,13 @@ export const ACTIONS = {
   operatorListBookers:         { scope: 'master', auth: 'operator', fn: operatorListBookers },
   operatorSaveBooker:          { scope: 'master', auth: 'operator', fn: operatorSaveBooker },
   operatorDeleteBooker:        { scope: 'master', auth: 'operator', fn: operatorDeleteBooker },
-  operatorResetBookerPassword: { scope: 'master', auth: 'operator', fn: operatorResetBookerPassword }
+  operatorResetBookerPassword: { scope: 'master', auth: 'operator', fn: operatorResetBookerPassword },
+
+  // ── Fase 3f ──────────────────────────────────────────────────────────────
+  // renderInvoicePdf er IKKE en action: den kaldes af /api/faktura-pdf-ruten,
+  // som streamer bytes. Var den en action, ville PDF'en (med CPR) skulle
+  // gennem et JSON-svar.
+  archiveInvoiceToDrive: { scope: 'band', auth: 'admin', fn: archiveInvoiceToDrive }
 };
 
 export const VALID_SCOPES = ['band', 'master', 'identity', 'none'];

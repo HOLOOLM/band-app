@@ -299,6 +299,9 @@ export async function bookingChecks(ydreEnv, ok) {
   ok('bookerLogin: forkert kode giver generisk besked',
      bForkert.ok === false && bForkert.error === 'Forkert email eller adgangskode',
      bForkert.error);
+  // Den ukendte e-mail har sin EGEN rate-limit-tæller, som også skal ryddes —
+  // ellers låser den efter fem suite-kørsler og testen bliver flaky.
+  await master.clearBookerLoginAttempts('findes-ikke@x.dk');
   const bUkendt = await runAction(env, 'bookerLogin',
     { email: 'findes-ikke@x.dk', passwordHash: await sha256hex('nej') });
   ok('bookerLogin: ukendt konto giver SAMME besked som forkert kode',
