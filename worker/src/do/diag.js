@@ -21,11 +21,27 @@ const STEPS = [5000, 10000, 50000, 200000];
 const REPEATS = 5;
 
 export function diagAuthorized(request, env) {
-  const forventet = String(env.DIAG_TOKEN || '');
+  // trim() på begge sider. Et token der kopieres fra en terminal får nemt et
+  // usynligt linjeskift eller mellemrum med, og dette projekt har historie med
+  // netop den fejl (se cloudflare-worker-deploy-gotchas: en pipet hemmelighed i
+  // PowerShell blev 65 tegn i stedet for 64 og blev afvist uden forklaring).
+  // Whitespace omkring et token bærer ingen betydning, så det er robusthed —
+  // ikke en svækkelse af sammenligningen, der stadig er konstant-tid.
+  const forventet = String(env.DIAG_TOKEN || '').trim();
   if (!forventet) return false;                       // ikke sat = endpointet findes ikke
-  const givet = String(request.headers.get('X-Diag-Token') || '');
+  const givet = String(request.headers.get('X-Diag-Token') || '').trim();
   if (!givet) return false;
-  return constTimeEq(givet, forventet);
+  const ok = constTimeEq(givet, forventet);
+  if (!ok) {
+    // Svaret er altid 404, så et afslag afslører intet udefra. Men uden nogen
+    // form for spor er et forkert token umuligt at fejlsøge: man kan ikke se om
+    // det er en tastefejl, en pladsholder eller whitespace. Længderne logges
+    // derfor til `wrangler tail`, som kun kontoejeren kan læse. Selve værdierne
+    // logges ALDRIG.
+    console.warn('_diag afvist: header ' + givet.length +
+                 ' tegn, forventet ' + forventet.length + ' tegn');
+  }
+  return ok;
 }
 
 export async function diag(env) {
