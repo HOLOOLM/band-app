@@ -33,7 +33,8 @@ import {
 } from './settings.js';
 import {
   operatorLogin, listTenants, registerTenant, updateTenant, setTenantStatus,
-  bandHealth, getAuditLog, backupBand, migrateAllBands, deleteTenant
+  bandHealth, getAuditLog, backupBand, migrateAllBands, deleteTenant,
+  operatorChangePassword
 } from './operator.js';
 import {
   getAllJobs, getAllHonorar, getFeedUrl, rotateFeedToken
@@ -138,6 +139,7 @@ export const ACTIONS = {
   updateTenant:     { scope: 'master', auth: 'operator', fn: updateTenant },
   setTenantStatus:  { scope: 'master', auth: 'operator', fn: setTenantStatus },
   bandHealth:       { scope: 'master', auth: 'operator', fn: bandHealth },
+  operatorChangePassword: { scope: 'master', auth: 'operator', fn: operatorChangePassword },
   getAuditLog:      { scope: 'master', auth: 'operator', fn: getAuditLog },
   backupBand:       { scope: 'master', auth: 'operator', fn: backupBand },
   migrateAllBands:  { scope: 'master', auth: 'operator', fn: migrateAllBands },

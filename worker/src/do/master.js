@@ -393,7 +393,10 @@ export class MasterDO extends DurableObject {
       ok: true,
       schemaVersion: Number(this.db.value(
         `SELECT value FROM master_meta WHERE key = 'schema_version'`) ?? 0),
-      bands: Number(this.db.value('SELECT count(*) AS c FROM bands') ?? 0)
+      bands: Number(this.db.value('SELECT count(*) AS c FROM bands') ?? 0),
+      // Bruges af bootstrapOperator til at afgøre om systemet er urørt.
+      operators: Number(this.db.value('SELECT count(*) AS c FROM operators') ?? 0),
+      bookers: Number(this.db.value('SELECT count(*) AS c FROM bookers') ?? 0)
     };
   }
 }

@@ -19,7 +19,7 @@ import { honorarChecks } from './selftest-honorar.js';
 import { adminChecks } from './selftest-admin.js';
 import { bookingChecks } from './selftest-bookings.js';
 import { pdfChecks } from './selftest-pdf.js';
-import { cutoverChecks } from './selftest-cutover.js';
+import { cutoverChecks, bootstrapChecks } from './selftest-cutover.js';
 
 const BAND_TABLES = ['members', 'contracts', 'attendances', 'invoices',
                      'bookings', 'settings', 'login_log', 'sessions',
@@ -60,6 +60,7 @@ export async function selftest(env) {
 
     // ── Omskiftningsflaget (Fase 6 cutover) ───────────────────────────────
     cutoverChecks(ok);
+    await bootstrapChecks(env, ok);
 
     // ── Skema løftes ved første adgang ────────────────────────────────────
     const master = masterStub(env);

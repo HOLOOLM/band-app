@@ -75,6 +75,26 @@ export default {
           }
         }));
       }
+      // Førstegangsopsætning af operatøren. Uden den er det nye datalag
+      // uigennemtrængeligt: alle operatør-handlinger kræver et operatør-token,
+      // og et token kræver en operatør.
+      //
+      // To lag beskytter den: BOOTSTRAP_TOKEN skal være sat (ellers findes
+      // ruten ikke), OG den virker kun mens operators-tabellen er tom. Efter
+      // første brug er den inert, så et glemt token ikke er en bagdør.
+      if (url.pathname === '/api/_bootstrap') {
+        const forventet = String(env.BOOTSTRAP_TOKEN || '').trim();
+        const givet = String(request.headers.get('X-Bootstrap-Token') || '').trim();
+        if (!forventet || !givet || givet.length !== forventet.length ||
+            !constTimeEqW(givet, forventet)) {
+          return withSecHeaders(json({ ok: false, error: 'Ikke fundet' }, 404));
+        }
+        let b = {};
+        try { b = await request.json(); } catch (e) {}
+        const { bootstrapOperator } = await import('./actions/operator.js');
+        return withSecHeaders(json(
+          await bootstrapOperator(env, b.email, b.password, b.passwordHash)));
+      }
       if (url.pathname === '/api/login')           return withSecHeaders(await apiLogin(request, env));
       if (url.pathname === '/api/operator-login')  return withSecHeaders(await apiOperatorLogin(request, env));
       if (url.pathname === '/api/booker-login')    return withSecHeaders(await apiBookerLogin(request, env));
@@ -105,6 +125,16 @@ export default {
 };
 
 // ─── Hjælpere ────────────────────────────────────────────────────────────────
+
+// Konstant-tids sammenligning til bootstrap-tokenet. Lokal kopi, så Workerens
+// ydre lag ikke skal importere crypto-modulet for én funktion.
+function constTimeEqW(a, b) {
+  a = String(a); b = String(b);
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
 
 function json(obj, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(obj), {

@@ -66,6 +66,80 @@ export async function operatorLogin(ctx) {
   return { ok: true, token: await issueToken(env, 'operator', { email }, OPERATOR_TOKEN_TTL_SEC) };
 }
 
+/**
+ * bootstrapOperator — opretter den FØRSTE operatør.
+ *
+ * Uden denne er systemet uigennemtrængeligt: alle operatør-handlinger kræver et
+ * operatør-token, og et token kræver en operatør. Apps Script løste det med
+ * setOperator_RUN_ME() i editoren; her findes ingen editor.
+ *
+ * To lag beskytter den:
+ *   1. BOOTSTRAP_TOKEN-hemmeligheden. Er den ikke sat, findes endpointet ikke.
+ *   2. Den virker KUN når operators-tabellen er TOM. Efter første brug er den
+ *      inert, uanset om hemmeligheden bliver liggende — så et glemt token er
+ *      ikke en åben bagdør.
+ *
+ * Vil man skifte operatør-kode bagefter, bruges operatorChangePassword, som
+ * kræver at man er logget ind.
+ */
+export async function bootstrapOperator(env, email, password, clientHash) {
+  const master = masterStub(env);
+  const st = await master.status();
+  if (Number(st.operators) > 0) {
+    return {
+      ok: false,
+      error: 'Der findes allerede en operatør. Brug operatorChangePassword i stedet.'
+    };
+  }
+  const e = String(email || '').toLowerCase().trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) return { ok: false, error: 'Ugyldig e-mail' };
+
+  // Klienten sender normalt sha256(password) som clientHash. Ved bootstrap er
+  // det nemmere at sende adgangskoden direkte fra en terminal, så vi accepterer
+  // begge — men kræver en rimelig længde, fordi dette er systemets mest
+  // privilegerede konto.
+  let hash = String(clientHash || '');
+  if (!/^[0-9a-f]{64}$/.test(hash)) {
+    const pw = String(password || '');
+    if (pw.length < 12) {
+      return { ok: false, error: 'Adgangskoden skal være mindst 12 tegn' };
+    }
+    hash = await sha256hex(pw);
+  }
+
+  const pf = await newPasswordFields(hash, pwIterations(env));
+  await master.putOperator(e, pf.passwordHash, pf.pwSalt);
+  await master.audit(e, 'operatoer-bootstrappet', '', '');
+  return { ok: true, email: e };
+}
+
+/** Operatøren skifter sin egen adgangskode. Kræver gyldigt operatør-token. */
+export async function operatorChangePassword(ctx) {
+  const { env, operator, p } = ctx;
+  const master = masterStub(env);
+  const op = await master.getOperator(operator.email);
+  if (!op) return { ok: false, error: 'Operatøren findes ikke' };
+
+  if (!await verifyHash(String(p.oldHash || ''), op.pwSalt, op.passwordHash)) {
+    return { ok: false, error: 'Den gamle adgangskode passer ikke.' };
+  }
+  const ny = String(p.newHash || '');
+  if (!/^[0-9a-f]{64}$/.test(ny)) return { ok: false, error: 'Ugyldig ny adgangskode.' };
+  if (ny === String(p.oldHash || '')) {
+    return { ok: false, error: 'Den nye adgangskode skal være forskellig fra den gamle.' };
+  }
+
+  const pf = await newPasswordFields(ny, pwIterations(env));
+  await master.putOperator(operator.email, pf.passwordHash, pf.pwSalt);
+  await master.audit(operator.email, 'operatoer-kode-skiftet', '', '');
+  // Udestående operatør-tokens forbliver gyldige indtil de udløber (8 timer).
+  // Det afviger fra medlems-tokens, som dør ved kodeskift via pwFp — operatøren
+  // har ingen tilsvarende fingerprint-mekanisme. Værd at vide hvis en kode
+  // skiftes fordi den er kompromitteret: skift MASTER_SECRET for at dræbe alle
+  // tokens med det samme.
+  return { ok: true, bemaerk: 'Udestående operatør-sessioner udløber inden for 8 timer.' };
+}
+
 /** listTenants — én forespørgsel mod master, uafhængigt af antal bands. */
 export async function listTenants(ctx) {
   const rows = await ctx.master.listBands();
