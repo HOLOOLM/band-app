@@ -1,5 +1,5 @@
 {
-  "_om": "Brandingværdier for Danser med Drenge Tribute, udtrukket 1:1 fra prototypen (DMDT-prototype/index.html). Hver key svarer til en række i Settings-fanen — se settings-template.md. Filen er bevidst backend-uafhængig, så den også kan bruges når appen flyttes fra Apps Script til Supabase.",
+  "_om": "Brandingværdier for Danser med Drenge Tribute, udtrukket 1:1 fra prototypen (DMDT-prototype/index.html). Hver key svarer til en række i Settings-fanen — se settings-template.md. Filen er bevidst backend-uafhængig, så den også kan bruges når appen flyttes fra Apps Script til Cloudflare.",
   "_kilde": "DMDT-prototype/index.html — :root (linje 12-19), RIDER_INTRO/RIDERS (1470-1507), kontrakt- og honorar-footere (1552-1611, 2590-2595)",
   "_udelader": "seedPassword og CPR hører ikke i versionsstyring. logoFileId er Drive-specifik — upload dmd-logo.png via operatør-panelet i stedet.",
 
