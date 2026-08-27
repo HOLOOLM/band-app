@@ -7,9 +7,6 @@
 
 import { BandDO } from './do/band.js';
 import { MasterDO } from './do/master.js';
-import { selftest } from './do/selftest.js';
-import { benchmark } from './do/bench.js';
-import { diag, diagBillig, diagAuthorized, maalEtHash, iterFraUrl } from './do/diag.js';
 import { bandStub } from './lib/addressing.js';
 import { buildIcal } from './actions/crossband.js';
 import { scheduled as runScheduled } from './scheduled.js';
@@ -27,17 +24,20 @@ export default {
       // den sættes kun via `wrangler dev --var SELFTEST:on`, aldrig i wrangler.toml.
       if (url.pathname === '/api/_selftest') {
         if (env.SELFTEST !== 'on') return withSecHeaders(json({ ok: false, error: 'Ikke fundet' }, 404));
+        const { selftest } = await import('./do/selftest.js');
         return withSecHeaders(json(await selftest(env)));
       }
       if (url.pathname === '/api/_bench') {
         if (env.SELFTEST !== 'on') return withSecHeaders(json({ ok: false, error: 'Ikke fundet' }, 404));
+        const { benchmark } = await import('./do/bench.js');
         return withSecHeaders(json(await benchmark(env, bandStub(env, 'bench'))));
       }
       // Produktionsdiagnostik. Kræver DIAG_TOKEN-hemmeligheden i en header, og
       // findes ikke hvis hemmeligheden ikke er sat. Midlertidig — flyttes til
       // det operatør-gatede bandHealth i Fase 3j.
       if (url.pathname === '/api/_diag') {
-        if (!diagAuthorized(request, env)) {
+        const dg = await import('./do/diag.js');
+        if (!dg.diagAuthorized(request, env)) {
           // Log de billige tjek til `wrangler tail`, som kun kontoejeren kan
           // læse. Svaret udefra er stadig 404, så intet afsløres offentligt —
           // men det kritiske spørgsmål (virker EU-jurisdiktionen?) kan besvares
@@ -45,17 +45,17 @@ export default {
           try {
             // ?iter=N måler ÉT hash ved N iterationer. Uden parameteren
             // rapporteres kun de billige tjek.
-            const iter = iterFraUrl(request.url);
+            const iter = dg.iterFraUrl(request.url);
             const ud = iter
-              ? { kdf: await maalEtHash(iter) }
-              : await diagBillig(env);
+              ? { kdf: await dg.maalEtHash(iter) }
+              : await dg.diagBillig(env);
             console.log('DIAG ' + JSON.stringify(ud));
           } catch (e) {
             console.log('DIAG fejlede: ' + String(e && e.message || e));
           }
           return withSecHeaders(json({ ok: false, error: 'Ikke fundet' }, 404));
         }
-        return withSecHeaders(json(await diag(env)));
+        return withSecHeaders(json(await dg.diag(env)));
       }
       // iCal-feed. Egen GET-rute frem for /api/call, fordi et kalenderprogram
       // ikke kan sende POST med cookie. Token i query-parameter er her det
