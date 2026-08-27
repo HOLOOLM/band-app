@@ -10,6 +10,7 @@
 // efterprøves med ét kald frem for at være noget vi tror på.
 
 import { bandStub, masterStub, fanOut, jurisdictionActive } from '../lib/addressing.js';
+import { authChecks } from './selftest-auth.js';
 
 const BAND_TABLES = ['members', 'contracts', 'attendances', 'invoices',
                      'bookings', 'settings', 'login_log', 'sessions',
@@ -21,6 +22,9 @@ export async function selftest(env) {
   const ok = (navn, bestået, detalje) => checks.push({ navn, bestået: !!bestået, detalje });
 
   try {
+    // ── Crypto, password-hashing og tokens (Fase 3a) ──────────────────────
+    await authChecks(ok);
+
     // ── Skema løftes ved første adgang ────────────────────────────────────
     const master = masterStub(env);
     const mStatus = await master.status();

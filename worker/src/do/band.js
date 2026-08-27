@@ -12,6 +12,7 @@
 
 import { DurableObject } from 'cloudflare:workers';
 import { Db } from '../lib/sql.js';
+import { benchKdf } from './bench.js';
 import {
   BAND_MIGRATIONS, BAND_SCHEMA_VERSION,
   applyMigrations, readSchemaVersion
@@ -218,6 +219,15 @@ export class BandDO extends DurableObject {
   }
 
   // ── Diagnostik ───────────────────────────────────────────────────────────
+
+  /**
+   * Måler password-KDF'ens omkostning INDE i objektet. Planen placerer KDF'en
+   * her frem for i den ydre Worker, fordi CPU-budgettet for Durable Objects
+   * angives mere generøst end Workers 10 ms på gratisplanen.
+   */
+  async bench() {
+    return benchKdf('Durable Object');
+  }
 
   /**
    * Kolonnenavne pr. tabel. Bruges af selvtesten til at bevise at band_id IKKE
