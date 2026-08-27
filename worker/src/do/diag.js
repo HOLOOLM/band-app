@@ -44,6 +44,50 @@ export function diagAuthorized(request, env) {
   return ok;
 }
 
+/**
+ * De BILLIGE tjek: hemmeligheders tilstedeværelse, CPR_KEY-længde,
+ * EU-jurisdiktion og at DO-lageret virker. Ingen CPU-tung hashing.
+ *
+ * Disse logges til `wrangler tail` ved ETHVERT kald til /api/_diag, også et
+ * uautoriseret — tail-streamen kan kun læses af kontoejeren, og svaret udefra
+ * er fortsat 404. Det gør det muligt at få det kritiske svar (virker
+ * jurisdiktionen?) uden at skulle håndtere et token i en terminal, hvilket har
+ * vist sig at være den største kilde til fejl i opsætningen.
+ *
+ * KDF-målingen er bevidst IKKE med her: den er dyr, og et offentligt endpoint
+ * der kan trigge 200.000 PBKDF2-iterationer ville være en oplagt måde at brænde
+ * CPU-budgettet. Den kræver derfor fortsat gyldigt token.
+ */
+export async function diagBillig(env) {
+  let lagerOk = false;
+  let skemaVersion = null;
+  try {
+    const stub = bandStub(env, '__diag__');
+    const st = await stub.status();
+    skemaVersion = st.schemaVersion;
+    await stub.putSettings({ bandName: 'diag' }, ['bandName']);
+    const s = await stub.getSettings();
+    lagerOk = s.bandName === 'diag';
+  } catch (e) {
+    lagerOk = 'fejl: ' + String(e && e.message || e);
+  }
+
+  return {
+    hemmeligheder: {
+      MASTER_SECRET: !!env.MASTER_SECRET,
+      CPR_KEY: !!env.CPR_KEY,
+      DIAG_TOKEN: !!env.DIAG_TOKEN,
+      SIDECAR_TOKEN: !!env.SIDECAR_TOKEN,
+      RESEND_API_KEY: !!env.RESEND_API_KEY
+    },
+    cprKeyGyldig: cprKeyGyldig(env),
+    euJurisdiktion: jurisdictionActive(env),
+    doLagerVirker: lagerOk,
+    doSkemaVersion: skemaVersion,
+    pwIterations: pwIterations(env)
+  };
+}
+
 export async function diag(env) {
   const maalinger = [];
   const clientHash = 'a'.repeat(64);

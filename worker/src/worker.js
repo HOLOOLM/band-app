@@ -9,7 +9,7 @@ import { BandDO } from './do/band.js';
 import { MasterDO } from './do/master.js';
 import { selftest } from './do/selftest.js';
 import { benchmark } from './do/bench.js';
-import { diag, diagAuthorized } from './do/diag.js';
+import { diag, diagBillig, diagAuthorized } from './do/diag.js';
 import { bandStub } from './lib/addressing.js';
 
 export { BandDO, MasterDO };
@@ -35,6 +35,15 @@ export default {
       // det operatør-gatede bandHealth i Fase 3j.
       if (url.pathname === '/api/_diag') {
         if (!diagAuthorized(request, env)) {
+          // Log de billige tjek til `wrangler tail`, som kun kontoejeren kan
+          // læse. Svaret udefra er stadig 404, så intet afsløres offentligt —
+          // men det kritiske spørgsmål (virker EU-jurisdiktionen?) kan besvares
+          // uden at skulle håndtere et token i en terminal.
+          try {
+            console.log('DIAG ' + JSON.stringify(await diagBillig(env)));
+          } catch (e) {
+            console.log('DIAG fejlede: ' + String(e && e.message || e));
+          }
           return withSecHeaders(json({ ok: false, error: 'Ikke fundet' }, 404));
         }
         return withSecHeaders(json(await diag(env)));
