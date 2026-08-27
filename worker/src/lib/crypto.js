@@ -107,21 +107,27 @@ export function constTimeEq(a, b) {
 // iterationstallet hæves. Det er netop mekanismen der lader jer gå fra 10.000
 // til 200.000 med én env-var-ændring dagen I skifter til Workers Paid.
 
-// Valgt 5000 fordi installationen bliver på Workers Free, hvor loftet er 10 ms
-// CPU pr. request. Målingen i do/bench.js: 10.000 iterationer koster 8 ms — for
-// tæt på loftet at turde. 5000 giver ~4 ms og dermed margen.
+// 10.000 er verificeret i produktion 2026-08-27: et enkelt hash gennemføres
+// uden at Cloudflare dræber requesten, altså inden for gratisplanens 10 ms CPU.
+// Samme styrke som Apps Script bruger i dag (Code.gs:825), så migreringen
+// forringer ikke adgangskodesikkerheden.
 //
-// Prisen skal være kendt: 5000 er HALVDELEN af de 10.000 Apps Script bruger i
-// dag (Code.gs:825), og OWASP anbefaler 600.000 for PBKDF2-HMAC-SHA256. Det
-// betyder ikke noget for online-gætteri — det dækkes af rate-limit — men gør et
-// offline-angreb efter et databrud billigere. Modforanstaltningen er derfor
-// password-KVALITET: seedPassword skal skiftes til noget lang og tilfældigt.
+// Vi målte først 5000 af forsigtighed, fordi lokale tal antydede at 10.000 lå
+// tæt på loftet. Det viste sig at være en måleartefakt: Workers fryser uret
+// under synkron kørsel, så vægur-tid kan principielt ikke måle CPU-arbejde
+// derinde. Den gyldige test er binær — gennemføres requesten, passede den.
+//
+// OWASP anbefaler 600.000 for PBKDF2-HMAC-SHA256, så 10.000 er stadig lavt.
+// Online-gætteri dækkes af rate-limit (5 forsøg/15 min pr. e-mail), men et
+// offline-angreb efter et databrud er billigt. Den vigtigste
+// modforanstaltning er derfor password-KVALITET — se plan-noten om at give
+// hvert medlem sin egen tilfældige startkode i stedet for en delt seedPassword.
 //
 // Hæv til 200.000 samme dag der skiftes til Workers Paid (30 s CPU). Det kræver
 // KUN at PW_ITERATIONS-varen ændres — needsRehash opgraderer hver hash ved
 // næste login, fordi hashen gemmer sit eget iterationstal.
 export const PW_ALGO = 'pbkdf2';
-export const PW_ITERATIONS_DEFAULT = 5000;
+export const PW_ITERATIONS_DEFAULT = 10000;
 
 /** Iterationstal fra env, så det kan hæves uden kodeændring. */
 export function pwIterations(env) {

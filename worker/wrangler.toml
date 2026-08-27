@@ -30,9 +30,17 @@ id = "c0a52403e89a44ea95e9f94c2e4e900e"
 
 # Ikke-hemmelige variabler
 [vars]
-# Password-KDF. 5000 er valgt for at holde os under gratisplanens 10 ms CPU
-# pr. request (målt: 10.000 = 8 ms, 5000 = ~4 ms). Hæv til 200000 samme dag
-# der skiftes til Workers Paid — det er den ENESTE ændring der kræves, da
-# needsRehash opgraderer hver hash ved næste login.
-PW_ITERATIONS = "5000"
+# Password-KDF. 10000 er verificeret i produktion 2026-08-27: et enkelt hash
+# ved 10.000 iterationer gennemføres uden at Cloudflare dræber requesten, altså
+# inden for gratisplanens 10 ms CPU. Det er samme styrke som Apps Script bruger
+# i dag, så migreringen forringer ikke adgangskodesikkerheden.
+#
+# Bemærk at tallet IKKE kan verificeres med vægur-tid: Workers fryser uret under
+# synkron kørsel, så Date.now() rapporterer 0 ms uanset arbejdet. Testen er
+# binær — gennemføres requesten, passede den.
+#
+# Hæv til 200000 samme dag der skiftes til Workers Paid (30 s CPU). Det er den
+# ENESTE ændring der kræves: needsRehash opgraderer hver hash ved næste login,
+# fordi hashen gemmer sit eget iterationstal.
+PW_ITERATIONS = "10000"
 SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzc3u_E4EIZLZXiDoJfSAZyHS0wWJCib_evu98htcSX6qzsZhraxzTIeeQ-gWjpq1o/exec"
