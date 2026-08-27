@@ -17,7 +17,9 @@
 
 import { pbkdf2 } from '../lib/crypto.js';
 
-const ITERATION_STEPS = [10000, 50000, 100000, 200000];
+// 5000 er det valgte tal på Free; 200.000 er målet på Paid. De øvrige trin er
+// med for at vise forholdet, så et fremtidigt valg kan tages på tal.
+const ITERATION_STEPS = [5000, 10000, 50000, 100000, 200000];
 const REPEATS = 5;
 
 /**
@@ -67,7 +69,10 @@ export async function benchmark(env, bandStub) {
 const FORBEHOLD = [
   'Lokal vægur-tid på denne maskine, ikke Cloudflares CPU-tid på deres hardware.',
   'CPU-loftet håndhæves ikke lokalt — overskridelse ses kun i produktion via wrangler tail.',
-  'Tallene vælger et startpunkt for PW_ITERATIONS; endelig bekræftelse kræver deploy.'
+  'Tallene vælger et startpunkt for PW_ITERATIONS; endelig bekræftelse kræver deploy.',
+  'MÅLT VARIANS: samme arbejde svingede 4-8 ms ved 10.000 iterationer afhængigt af ' +
+  'hvad maskinen ellers lavede. Kør flere gange og brug det HØJESTE tal, ikke det laveste — ' +
+  'ellers vælges et iterationstal der kun holder på en tom maskine.'
 ];
 
 function vurder(worker, doRes) {

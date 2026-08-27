@@ -107,8 +107,21 @@ export function constTimeEq(a, b) {
 // iterationstallet hæves. Det er netop mekanismen der lader jer gå fra 10.000
 // til 200.000 med én env-var-ændring dagen I skifter til Workers Paid.
 
+// Valgt 5000 fordi installationen bliver på Workers Free, hvor loftet er 10 ms
+// CPU pr. request. Målingen i do/bench.js: 10.000 iterationer koster 8 ms — for
+// tæt på loftet at turde. 5000 giver ~4 ms og dermed margen.
+//
+// Prisen skal være kendt: 5000 er HALVDELEN af de 10.000 Apps Script bruger i
+// dag (Code.gs:825), og OWASP anbefaler 600.000 for PBKDF2-HMAC-SHA256. Det
+// betyder ikke noget for online-gætteri — det dækkes af rate-limit — men gør et
+// offline-angreb efter et databrud billigere. Modforanstaltningen er derfor
+// password-KVALITET: seedPassword skal skiftes til noget lang og tilfældigt.
+//
+// Hæv til 200.000 samme dag der skiftes til Workers Paid (30 s CPU). Det kræver
+// KUN at PW_ITERATIONS-varen ændres — needsRehash opgraderer hver hash ved
+// næste login, fordi hashen gemmer sit eget iterationstal.
 export const PW_ALGO = 'pbkdf2';
-export const PW_ITERATIONS_DEFAULT = 10000;
+export const PW_ITERATIONS_DEFAULT = 5000;
 
 /** Iterationstal fra env, så det kan hæves uden kodeændring. */
 export function pwIterations(env) {
