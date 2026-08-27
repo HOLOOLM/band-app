@@ -18,6 +18,10 @@ import {
   getContracts, getContract, saveContract,
   changeContractStatus, deleteContract, getDashboard
 } from './contracts.js';
+import {
+  getJobs, getJob, updateMyAddress, updateJobStartAddress,
+  updateJobReturnHome, recalcJobDistance
+} from './jobs.js';
 
 // scope: hvilket lager action'en får udleveret
 //   'band'      → ctx.band er bandets DO-stub (kræver gyldigt bandId)
@@ -60,7 +64,18 @@ export const ACTIONS = {
   saveContract:         { scope: 'band', auth: 'admin', fn: saveContract },
   changeContractStatus: { scope: 'band', auth: 'admin', fn: changeContractStatus },
   deleteContract:       { scope: 'band', auth: 'admin', fn: deleteContract },
-  getDashboard:         { scope: 'band', auth: 'admin', fn: getDashboard }
+  getDashboard:         { scope: 'band', auth: 'admin', fn: getDashboard },
+
+  // ── Fase 3d ──────────────────────────────────────────────────────────────
+  // Alle 'member': hver af dem rører KUN kalderens egne rækker, og
+  // ejerskabet verificeres i selve SQL-forespørgslen (member_id = ?) frem for
+  // med et tjek bagefter, som kunne glemmes.
+  getJobs:                { scope: 'band', auth: 'member', fn: getJobs },
+  getJob:                 { scope: 'band', auth: 'member', fn: getJob },
+  updateMyAddress:        { scope: 'band', auth: 'member', fn: updateMyAddress },
+  updateJobStartAddress:  { scope: 'band', auth: 'member', fn: updateJobStartAddress },
+  updateJobReturnHome:    { scope: 'band', auth: 'member', fn: updateJobReturnHome },
+  recalcJobDistance:      { scope: 'band', auth: 'member', fn: recalcJobDistance }
 };
 
 export const VALID_SCOPES = ['band', 'master', 'identity', 'none'];

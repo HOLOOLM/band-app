@@ -526,6 +526,139 @@ export class BandDO extends DurableObject {
     };
   }
 
+  // ── Jobs (medlemmets eget udsnit) ────────────────────────────────────────
+  // Bemærk at intet herinde beregner eller skriver afstande. Det er hele
+  // pointen: _ensureDistance (Code.gs:516) beregnede og SKREV midt på
+  // læsestien, så en jobliste tog skrivelåsen. Her er læsning ren SELECT.
+
+  /**
+   * Medlemmets godkendte jobs med deltagerrækken. Kun 'godkendt' — et udkast er
+   * ikke et job endnu, og et medlem skal ikke kunne se aftaler der ikke er
+   * indgået.
+   */
+  async listMyJobs(memberId) {
+    await this.#ready();
+    return this.db.rows(
+      `SELECT a.id AS attendance_id, a.share, a.status, a.confirmed_at, a.checked_in_at,
+              a.start_address, a.distance_km, a.distance_origin, a.return_home,
+              a.distance_round_trip,
+              c.id AS contract_id, c.type, c.date, c.venue, c.get_in, c.soundcheck,
+              c.showtime_from, c.showtime_to,
+              CASE WHEN c.member_note IS NOT NULL AND c.member_note != '' THEN 1 ELSE 0 END
+                AS has_member_note
+         FROM attendances a
+         JOIN contracts c ON c.id = a.contract_id
+        WHERE a.member_id = ? AND c.status = 'godkendt'
+        ORDER BY c.date ASC`,
+      String(memberId)
+    );
+  }
+
+  /** Én attendance + dens kontrakt. Verificerer ejerskab i samme forespørgsel. */
+  async getMyJob(attendanceId, memberId) {
+    await this.#ready();
+    const a = this.db.one(
+      'SELECT * FROM attendances WHERE id = ? AND member_id = ?',
+      String(attendanceId), String(memberId));
+    if (!a) return null;
+    const c = this.db.one('SELECT * FROM contracts WHERE id = ?', a.contractId);
+    if (!c) return { attendance: a, contract: null, besaetning: [] };
+    const besaetning = this.db.rows(
+      `SELECT m.id, m.name, m.instrument, a.status
+         FROM attendances a JOIN members m ON m.id = a.member_id
+        WHERE a.contract_id = ?
+        GROUP BY m.id
+        ORDER BY m.name COLLATE NOCASE`,
+      a.contractId);
+    return { attendance: a, contract: c, besaetning };
+  }
+
+  /** Kontrakten for en attendance — til afstandsberegning på skrivestien. */
+  async getAttendanceWithContract(attendanceId, memberId) {
+    await this.#ready();
+    const a = this.db.one(
+      'SELECT * FROM attendances WHERE id = ? AND member_id = ?',
+      String(attendanceId), String(memberId));
+    if (!a) return null;
+    const c = this.db.one('SELECT * FROM contracts WHERE id = ?', a.contractId);
+    return { attendance: a, contract: c };
+  }
+
+  /** Alle af medlemmets attendances med kontrakt — til bulk-genberegning. */
+  async listMyAttendancesWithContracts(memberId) {
+    await this.#ready();
+    const rows = this.db.rows(
+      `SELECT a.*, c.venue AS c_venue, c.status AS c_status
+         FROM attendances a JOIN contracts c ON c.id = a.contract_id
+        WHERE a.member_id = ?`,
+      String(memberId));
+    return rows.map(r => ({
+      attendance: r,
+      contract: { venue: r.cVenue, status: r.cStatus }
+    }));
+  }
+
+  async setAttendanceDistance(id, km, origin, roundTrip) {
+    await this.#ready();
+    this.db.update('attendances', {
+      distanceKm: km === '' ? null : km,
+      distanceOrigin: origin || '',
+      distanceRoundTrip: roundTrip ? 1 : 0
+    }, 'id = ?', String(id));
+    return { ok: true };
+  }
+
+  /** Sætter startadresse og TØMMER cachen, så næste beregning bruger ny origin. */
+  async setAttendanceStartAddress(id, memberId, startAddress) {
+    await this.#ready();
+    const changed = this.db.update('attendances', {
+      startAddress: startAddress || '',
+      distanceKm: null, distanceOrigin: '', distanceRoundTrip: null
+    }, 'id = ? AND member_id = ?', String(id), String(memberId));
+    return { ok: changed > 0 };
+  }
+
+  async setAttendanceReturnHome(id, memberId, on) {
+    await this.#ready();
+    const changed = this.db.update('attendances', {
+      returnHome: on ? 1 : 0,
+      distanceKm: null, distanceOrigin: '', distanceRoundTrip: null
+    }, 'id = ? AND member_id = ?', String(id), String(memberId));
+    return { ok: changed > 0 };
+  }
+
+  /**
+   * Tømmer afstandscachen for de jobs der brugte HJEMMEADRESSEN som origin.
+   * Jobs med en egen startadresse er upåvirkede af at hjemmeadressen ændres.
+   */
+  async invalidateHomeDistances(memberId) {
+    await this.#ready();
+    this.db.run(
+      `UPDATE attendances
+          SET distance_km = NULL, distance_origin = '', distance_round_trip = NULL
+        WHERE member_id = ? AND (start_address IS NULL OR start_address = '')`,
+      String(memberId));
+    return { ok: true, ryddet: this.db.changes() };
+  }
+
+  // ── Afstandscache (pr. band) ─────────────────────────────────────────────
+
+  async getDistanceCache(key) {
+    await this.#ready();
+    const v = this.db.value('SELECT km FROM distance_cache WHERE key = ?', String(key));
+    return (v === null || v === undefined) ? null : Number(v);
+  }
+
+  async putDistanceCache(key, origin, destination, km) {
+    await this.#ready();
+    this.db.run(
+      `INSERT INTO distance_cache (key, origin, destination, km, cached_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET km = excluded.km, cached_at = excluded.cached_at`,
+      String(key), origin, destination, km, new Date().toISOString());
+    return { ok: true };
+  }
+
   // ── Login-forsøg (rate-limit pr. e-mail) ─────────────────────────────────
   // Erstatter CacheService-baseret lockout (Code.gs:1602-1609). Ligger i
   // objektet, så tælleren er pr. band og ikke deles med andre tenants.
@@ -704,6 +837,17 @@ export class BandDO extends DurableObject {
     return Number(this.db.value(
       `SELECT count(*) AS c FROM attendances a
         WHERE NOT EXISTS (SELECT 1 FROM contracts c WHERE c.id = a.contract_id)`) ?? 0);
+  }
+
+  /**
+   * SQLites total_changes() — samlet antal rækker ændret siden forbindelsen blev
+   * åbnet. Selvtesten bruger den til at BEVISE at læsestien ikke skriver: en
+   * påstand om "vi rører ikke databasen" er ellers kun en hensigt, og det var
+   * netop den hensigt _ensureDistance (Code.gs:516) brød.
+   */
+  async writeCounter() {
+    await this.#ready();
+    return Number(this.db.value('SELECT total_changes() AS c') ?? 0);
   }
 
   async debugColumns(tables) {

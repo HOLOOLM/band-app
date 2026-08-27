@@ -14,6 +14,7 @@ import { authChecks } from './selftest-auth.js';
 import { actionChecks } from './selftest-actions.js';
 import { memberChecks } from './selftest-members.js';
 import { contractChecks } from './selftest-contracts.js';
+import { jobChecks } from './selftest-jobs.js';
 
 const BAND_TABLES = ['members', 'contracts', 'attendances', 'invoices',
                      'bookings', 'settings', 'login_log', 'sessions',
@@ -36,6 +37,9 @@ export async function selftest(env) {
 
     // ── Kontrakter og dashboard (Fase 3c) ─────────────────────────────────
     await contractChecks(env, ok);
+
+    // ── Jobs og køreafstand (Fase 3d) ─────────────────────────────────────
+    await jobChecks(env, ok);
 
     // ── Skema løftes ved første adgang ────────────────────────────────────
     const master = masterStub(env);
