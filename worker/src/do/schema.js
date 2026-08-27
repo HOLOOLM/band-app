@@ -171,9 +171,37 @@ CREATE TABLE IF NOT EXISTS deleted_bands (
 CREATE TABLE IF NOT EXISTS master_meta (key TEXT PRIMARY KEY, value TEXT);
 `;
 
+// ── Band v2 ─────────────────────────────────────────────────────────────────
+// invoice_nr blev erklæret INTEGER, men er en STRENG: _nextInvoiceNr
+// (Code.gs:2331) danner "2026-001" med årstal og nulpolstring. SQLites
+// type-affinitet gemmer strengen alligevel (konvertering til heltal er ikke
+// tabsfri), så det var ikke en aktiv fejl — men en forkert erklæret type er en
+// fælde for den næste der læser skemaet, og et heltalsindeks ville sortere
+// "2026-10" før "2026-9".
+//
+// SQLite kan ikke ALTER COLUMN TYPE, så tabellen bygges om. Dataen kopieres med,
+// selvom der pt. ikke er nogen — trinnet skal virke uanset hvornår det kører.
+const BAND_V2 = `
+CREATE TABLE IF NOT EXISTS invoices_v2 (
+  id TEXT PRIMARY KEY,
+  contract_id TEXT, invoice_nr TEXT UNIQUE, date TEXT, amount REAL,
+  status TEXT, drive_file_id TEXT, drive_url TEXT,
+  created_at TEXT NOT NULL, paid_at TEXT
+);
+INSERT OR IGNORE INTO invoices_v2
+  (id, contract_id, invoice_nr, date, amount, status, drive_file_id, drive_url, created_at, paid_at)
+  SELECT id, contract_id, CAST(invoice_nr AS TEXT), date, amount, status,
+         drive_file_id, drive_url, created_at, paid_at
+    FROM invoices;
+DROP TABLE invoices;
+ALTER TABLE invoices_v2 RENAME TO invoices;
+CREATE INDEX IF NOT EXISTS idx_invoices_contract ON invoices(contract_id);
+CREATE INDEX IF NOT EXISTS idx_invoices_status ON invoices(status);
+`;
+
 // Tilføj nye trin ved at appende — ret ALDRIG et udgivet trin, da gamle objekter
 // kan have kørt den gamle udgave. Ny kolonne = nyt trin med ALTER TABLE.
-export const BAND_MIGRATIONS = [BAND_V1];
+export const BAND_MIGRATIONS = [BAND_V1, BAND_V2];
 export const MASTER_MIGRATIONS = [MASTER_V1];
 
 export const BAND_SCHEMA_VERSION = BAND_MIGRATIONS.length;

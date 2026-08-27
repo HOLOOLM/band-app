@@ -526,6 +526,177 @@ export class BandDO extends DurableObject {
     };
   }
 
+  // ── Honorar ──────────────────────────────────────────────────────────────
+
+  /**
+   * Rådata til honorarafregning for ét medlem.
+   *
+   * Bemærk at der IKKE filtreres på kontraktstatus: en afregning skal kunne vise
+   * jobs uanset om kontrakten er udkast eller godkendt, og frontenden viser
+   * statussen pr. række. Det er bevaret fra _buildHonorarRows (Code.gs:2182).
+   *
+   * Datoafgrænsningen sker i SQL frem for i hukommelsen — det er den eneste
+   * forespørgsel i appen der kan ramme flere års rækker.
+   */
+  async honorarRows(memberId, fra, til) {
+    await this.#ready();
+    const vilkaar = ['a.member_id = ?'];
+    const params = [String(memberId)];
+    if (fra) { vilkaar.push('c.date >= ?'); params.push(String(fra).slice(0, 10)); }
+    if (til) { vilkaar.push('c.date <= ?'); params.push(String(til).slice(0, 10)); }
+
+    const rows = this.db.rows(
+      `SELECT a.id AS attendance_id, a.share, a.status AS attendance_status,
+              a.start_address, a.distance_km, a.distance_origin, a.return_home,
+              a.distance_round_trip,
+              c.id AS contract_id, c.date, c.venue, c.type, c.status,
+              c.get_in, c.soundcheck, c.showtime_from, c.showtime_to,
+              c.sets, c.set_minutes
+         FROM attendances a
+         JOIN contracts c ON c.id = a.contract_id
+        WHERE ${vilkaar.join(' AND ')} AND c.date != ''
+        ORDER BY c.date ASC`,
+      ...params
+    );
+
+    // Besætning pr. kontrakt, kun for de kontrakter der faktisk er med.
+    const ids = [...new Set(rows.map(r => String(r.contractId)))];
+    const besaetning = {};
+    for (const cid of ids) {
+      besaetning[cid] = this.db.rows(
+        `SELECT m.name, m.instrument FROM attendances a
+           JOIN members m ON m.id = a.member_id
+          WHERE a.contract_id = ?
+          GROUP BY m.id
+          ORDER BY m.name COLLATE NOCASE`, cid
+      ).map(m => m.name + (m.instrument ? ' (' + m.instrument + ')' : ''));
+    }
+    return { rows, besaetning };
+  }
+
+  // ── Fakturaer ────────────────────────────────────────────────────────────
+
+  /**
+   * Næste ledige fakturanummer for et år, på formen "2026-001".
+   *
+   * Slettede fakturaer er soft-deleted netop for at holde deres nummer
+   * RESERVERET — to fakturaer med samme nummer i bogføringen er en reel fejl.
+   * Derfor tælles de med som brugte. Port af _nextInvoiceNr (Code.gs:2331).
+   *
+   * Ingen lås nødvendig: objektet er enkelttrådet, så scan-og-indsæt inden for
+   * ét RPC-kald kan ikke afbrydes af en samtidig faktura.
+   */
+  #nextInvoiceNr(year) {
+    const prefix = String(year) + '-';
+    const brugte = new Set();
+    for (const r of this.db.rows(
+      'SELECT invoice_nr FROM invoices WHERE invoice_nr LIKE ?', prefix + '%')) {
+      const n = parseInt(String(r.invoiceNr).slice(prefix.length), 10);
+      if (!isNaN(n)) brugte.add(n);
+    }
+    let n = 1;
+    while (brugte.has(n)) n++;
+    return prefix + String(n).padStart(3, '0');
+  }
+
+  /**
+   * Opretter eller genbruger fakturarækken for en kontrakt.
+   *
+   * Findes der en AKTIV faktura for kontrakten, genbruges den og dens nummer —
+   * ellers ville en genudsendelse få et nyt nummer og efterlade et hul.
+   * Drive-delen hører i sidecaren (Fase 3f) og er ikke her.
+   */
+  async createInvoice(contractId) {
+    await this.#ready();
+    let svar = null;
+    this.ctx.storage.transactionSync(() => {
+      const c = this.db.one('SELECT id, date, honorar, venue FROM contracts WHERE id = ?',
+        String(contractId));
+      if (!c) { svar = { ok: false, error: 'Kontrakt ikke fundet' }; return; }
+
+      const eksisterende = this.db.one(
+        `SELECT * FROM invoices WHERE contract_id = ? AND status != 'slettet'`,
+        String(contractId));
+
+      const amount = Number(c.honorar) || 0;
+      if (eksisterende) {
+        // Beløbet følger kontraktens honorar, som kan være ændret siden.
+        this.db.update('invoices', { amount }, 'id = ?', eksisterende.id);
+        svar = {
+          ok: true, reused: true,
+          invoice: Object.assign({}, eksisterende, { amount })
+        };
+        return;
+      }
+
+      const dato = c.date || new Date().toISOString().slice(0, 10);
+      const aar = Number(String(dato).slice(0, 4)) || new Date().getFullYear();
+      const nr = this.#nextInvoiceNr(aar);
+      const inv = {
+        id: 'inv' + this.#nextCounterSync('invoice'),
+        contractId: String(contractId),
+        invoiceNr: nr,
+        date: dato,
+        amount,
+        status: 'udestaaende',
+        driveFileId: '', driveUrl: '',
+        createdAt: new Date().toISOString(),
+        paidAt: ''
+      };
+      this.db.insert('invoices', inv);
+      svar = { ok: true, reused: false, invoice: inv };
+    });
+    return svar;
+  }
+
+  /** Aktive fakturaer med kontraktdata. Slettede skjules, men bliver liggende. */
+  async listInvoices() {
+    await this.#ready();
+    return this.db.rows(
+      `SELECT i.*, c.arrangoer, c.venue, c.date AS contract_date
+         FROM invoices i
+         LEFT JOIN contracts c ON c.id = i.contract_id
+        WHERE i.status != 'slettet'
+        ORDER BY i.created_at DESC`
+    );
+  }
+
+  async getInvoice(id) {
+    await this.#ready();
+    return this.db.one('SELECT * FROM invoices WHERE id = ?', String(id));
+  }
+
+  async setInvoiceStatus(id, status) {
+    await this.#ready();
+    const patch = { status };
+    // paidAt følger statussen: sættes ved betalt, ryddes ved udestående. Ellers
+    // ville en faktura der markeres udestående igen beholde sin betalingsdato.
+    if (status === 'betalt') patch.paidAt = new Date().toISOString();
+    else if (status === 'udestaaende') patch.paidAt = '';
+    const changed = this.db.update('invoices', patch, 'id = ?', String(id));
+    return { ok: changed > 0 };
+  }
+
+  /**
+   * SOFT delete. Rækken bliver liggende, så fakturanummeret forbliver brugt —
+   * det er hele formålet. Returnerer driveFileId, så kalderen kan flytte filen
+   * til papirkurven via sidecaren.
+   */
+  async softDeleteInvoice(id) {
+    await this.#ready();
+    const inv = this.db.one('SELECT * FROM invoices WHERE id = ?', String(id));
+    if (!inv) return { ok: false, error: 'Faktura ikke fundet' };
+    this.db.update('invoices', { status: 'slettet' }, 'id = ?', String(id));
+    return { ok: true, driveFileId: inv.driveFileId || '' };
+  }
+
+  async setInvoiceDriveFile(id, driveFileId, driveUrl) {
+    await this.#ready();
+    const changed = this.db.update('invoices',
+      { driveFileId: driveFileId || '', driveUrl: driveUrl || '' }, 'id = ?', String(id));
+    return { ok: changed > 0 };
+  }
+
   // ── Jobs (medlemmets eget udsnit) ────────────────────────────────────────
   // Bemærk at intet herinde beregner eller skriver afstande. Det er hele
   // pointen: _ensureDistance (Code.gs:516) beregnede og SKREV midt på
@@ -848,6 +1019,34 @@ export class BandDO extends DurableObject {
   async writeCounter() {
     await this.#ready();
     return Number(this.db.value('SELECT total_changes() AS c') ?? 0);
+  }
+
+  /** Kolonnenavn → erklæret type for én tabel. Bruges til at verificere migreringer. */
+  async debugColumnTypes(table) {
+    await this.#ready();
+    if (!/^[a-z_]+$/.test(table)) return {};
+    const ud = {};
+    for (const r of this.db.rows(`PRAGMA table_info(${table})`)) ud[r.name] = r.type;
+    return ud;
+  }
+
+  /**
+   * HARD delete af en faktura. Findes KUN for selvtesten, som skal kunne starte
+   * fra en tom fakturatabel for at kunne forudsige nummereringen. Produktionen
+   * bruger softDeleteInvoice — et fakturanummer må aldrig frigives.
+   */
+  async hardDeleteInvoiceForTest(id) {
+    await this.#ready();
+    this.db.run('DELETE FROM invoices WHERE id = ?', String(id));
+    return { ok: true };
+  }
+
+  /** Rydder hele fakturatabellen. Kun til selvtesten, af samme grund. */
+  async hardDeleteAllInvoicesForTest() {
+    await this.#ready();
+    this.db.run('DELETE FROM invoices');
+    this.db.run("DELETE FROM counters WHERE name = 'invoice'");
+    return { ok: true };
   }
 
   async debugColumns(tables) {

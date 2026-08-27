@@ -22,6 +22,10 @@ import {
   getJobs, getJob, updateMyAddress, updateJobStartAddress,
   updateJobReturnHome, recalcJobDistance
 } from './jobs.js';
+import {
+  getMyHonorar, getHonorarAdmin, createInvoice,
+  getInvoices, updateInvoiceStatus, deleteInvoice
+} from './honorar.js';
 
 // scope: hvilket lager action'en får udleveret
 //   'band'      → ctx.band er bandets DO-stub (kræver gyldigt bandId)
@@ -75,7 +79,17 @@ export const ACTIONS = {
   updateMyAddress:        { scope: 'band', auth: 'member', fn: updateMyAddress },
   updateJobStartAddress:  { scope: 'band', auth: 'member', fn: updateJobStartAddress },
   updateJobReturnHome:    { scope: 'band', auth: 'member', fn: updateJobReturnHome },
-  recalcJobDistance:      { scope: 'band', auth: 'member', fn: recalcJobDistance }
+  recalcJobDistance:      { scope: 'band', auth: 'member', fn: recalcJobDistance },
+
+  // ── Fase 3e ──────────────────────────────────────────────────────────────
+  // getMyHonorar er 'member' (egen afregning), getHonorarAdmin er 'admin'
+  // (andres). Fakturaerne er bandets bogføring og dermed admin hele vejen.
+  getMyHonorar:        { scope: 'band', auth: 'member', fn: getMyHonorar },
+  getHonorarAdmin:     { scope: 'band', auth: 'admin',  fn: getHonorarAdmin },
+  createInvoice:       { scope: 'band', auth: 'admin',  fn: createInvoice },
+  getInvoices:         { scope: 'band', auth: 'admin',  fn: getInvoices },
+  updateInvoiceStatus: { scope: 'band', auth: 'admin',  fn: updateInvoiceStatus },
+  deleteInvoice:       { scope: 'band', auth: 'admin',  fn: deleteInvoice }
 };
 
 export const VALID_SCOPES = ['band', 'master', 'identity', 'none'];
