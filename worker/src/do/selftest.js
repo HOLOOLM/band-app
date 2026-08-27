@@ -16,6 +16,7 @@ import { memberChecks } from './selftest-members.js';
 import { contractChecks } from './selftest-contracts.js';
 import { jobChecks } from './selftest-jobs.js';
 import { honorarChecks } from './selftest-honorar.js';
+import { adminChecks } from './selftest-admin.js';
 
 const BAND_TABLES = ['members', 'contracts', 'attendances', 'invoices',
                      'bookings', 'settings', 'login_log', 'sessions',
@@ -44,6 +45,9 @@ export async function selftest(env) {
 
     // ── Honorar og fakturaer (Fase 3e) ────────────────────────────────────
     await honorarChecks(env, ok);
+
+    // ── Settings, operatør, kryds-band og iCal (Fase 3i, 3j, 3k) ──────────
+    await adminChecks(env, ok);
 
     // ── Skema løftes ved første adgang ────────────────────────────────────
     const master = masterStub(env);

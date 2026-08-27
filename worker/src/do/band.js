@@ -515,6 +515,81 @@ export class BandDO extends DurableObject {
     };
   }
 
+  /**
+   * Sundhedstjek af bandets data. Faresignaler operatøren bør reagere på.
+   *
+   * Hvert tal her er valgt fordi det peger på noget der er GÅET galt, ikke blot
+   * på en tilstand: nul admins betyder at ingen kan administrere bandet,
+   * forældreløse deltagerrækker trækker forkerte tal med sig i honorarfordeling
+   * og dashboard, og en faktura der har været udestående i over 30 dage er
+   * sandsynligvis glemt.
+   */
+  async health() {
+    await this.#ready();
+    const iDag = new Date().toISOString().slice(0, 10);
+    const graense = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+    const tal = q => Number(this.db.value(q) ?? 0);
+    return {
+      skemaVersion: Number(this.db.value(
+        `SELECT value FROM band_meta WHERE key = 'schema_version'`) ?? 0),
+      medlemmer: tal('SELECT count(*) AS c FROM members'),
+      admins: tal(`SELECT count(*) AS c FROM members WHERE role = 'admin'`),
+      kontrakter: tal('SELECT count(*) AS c FROM contracts'),
+      kommende: Number(this.db.value(
+        'SELECT count(*) AS c FROM contracts WHERE date >= ?', iDag) ?? 0),
+      naesteGig: this.db.value(
+        "SELECT min(date) AS d FROM contracts WHERE date >= ?", iDag) || '',
+      forældreløseDeltagere: tal(
+        `SELECT count(*) AS c FROM attendances a
+          WHERE NOT EXISTS (SELECT 1 FROM contracts c WHERE c.id = a.contract_id)`),
+      forfaldneFakturaer: Number(this.db.value(
+        `SELECT count(*) AS c FROM invoices
+          WHERE status = 'udestaaende' AND date != '' AND date < ?`, graense) ?? 0),
+      aktiveSessioner: Number(this.db.value(
+        'SELECT count(*) AS c FROM sessions WHERE expires_at > ?',
+        new Date().toISOString()) ?? 0),
+      assets: this.db.rows(
+        'SELECT kind, count(*) AS chunks FROM assets GROUP BY kind')
+        .reduce((o, r) => (o[r.kind] = r.chunks, o), {})
+    };
+  }
+
+  /**
+   * Fuld JSON-dump af bandets data. Til backupBand.
+   *
+   * Password-hashes og salte er BEVIDST udeladt: en eksport der lander i en
+   * mailboks skal ikke indeholde credentials. Det samme gælder sessioner.
+   */
+  async exportAll() {
+    await this.#ready();
+    const settings = {};
+    for (const r of this.db.rows('SELECT key, value FROM settings')) settings[r.key] = r.value;
+    return {
+      settings,
+      members: this.db.rows(
+        `SELECT id, name, category, instrument, phone, email, reg_account, address,
+                role, created_at FROM members`),
+      contracts: this.db.rows('SELECT * FROM contracts'),
+      attendances: this.db.rows('SELECT * FROM attendances'),
+      invoices: this.db.rows('SELECT * FROM invoices'),
+      bookings: this.db.rows('SELECT * FROM bookings'),
+      loginLog: this.db.rows('SELECT * FROM login_log ORDER BY ts DESC LIMIT 1000')
+    };
+  }
+
+  /**
+   * Rydder ALT i objektet. Kaldes ved permanent sletning af et band.
+   *
+   * deleteAll() fjerner både SQL-tabeller og nøgle/værdi-lageret. Et Durable
+   * Object forsvinder ikke af sig selv når ingen refererer det, så efterladt
+   * data ville stadig tælle mod lagringskvoten OG stadig indeholde persondata.
+   */
+  async wipe() {
+    await this.ctx.storage.deleteAll();
+    this.#migrated = false;   // næste adgang bygger skemaet forfra
+    return { ok: true };
+  }
+
   /** Opsummering til operatørlisten i master. Kaldes efter kontraktændringer. */
   async summaryStats() {
     await this.#ready();
@@ -524,6 +599,69 @@ export class BandDO extends DurableObject {
       upcoming: Number(this.db.value(
         "SELECT count(*) AS c FROM contracts WHERE date >= ?", iDag) ?? 0)
     };
+  }
+
+  // ── Assets (logo, rider-PDF, sceneplan) ──────────────────────────────────
+  //
+  // Erstatter Drive-filer. Loftet er 2 MB pr. SQL-række, så større filer deles
+  // i bidder på `seq`.
+  //
+  // Vi gemmer BASE64-strengen, ikke rå bytes. Det virker omvendt, men er
+  // bevidst: klienten sender allerede base64, og læsestien skal bare sætte
+  // bidderne sammen og sætte "data:<mime>;base64," foran. Gemte vi bytes, skulle
+  // hver læsning base64-kode filen igen — og på en 5 MB PDF er det CPU-arbejde
+  // der kan ramme gratisplanens 10 ms-loft.
+
+  async putAsset(kind, mime, base64, chunkSize = 900000) {
+    await this.#ready();
+    const b64 = String(base64 || '');
+    const nu = new Date().toISOString();
+    this.ctx.storage.transactionSync(() => {
+      this.db.run('DELETE FROM assets WHERE kind = ?', kind);
+      if (!b64) return;
+      let seq = 0;
+      for (let i = 0; i < b64.length; i += chunkSize) {
+        const del = b64.slice(i, i + chunkSize);
+        this.db.insert('assets', {
+          kind, seq,
+          mime: seq === 0 ? (mime || 'application/octet-stream') : '',
+          // Logoet gemmes som færdig data-URL i seq 0, så getConfig kan læse den
+          // direkte uden nogen strengoperationer overhovedet.
+          dataUrl: (kind === 'logo' && seq === 0 && b64.length <= chunkSize)
+            ? 'data:' + (mime || 'image/png') + ';base64,' + del
+            : del,
+          updatedAt: nu
+        });
+        seq++;
+      }
+    });
+    return { ok: true, chunks: Math.ceil(b64.length / chunkSize) || 0 };
+  }
+
+  /** Samler et asset til en data-URL. Returnerer null hvis det ikke findes. */
+  async getAsset(kind) {
+    await this.#ready();
+    const rows = this.db.rows(
+      'SELECT seq, mime, data_url FROM assets WHERE kind = ? ORDER BY seq ASC', kind);
+    if (!rows.length) return null;
+    const mime = rows[0].mime || 'application/octet-stream';
+    // Logoet i én bid er allerede en færdig data-URL.
+    if (rows.length === 1 && String(rows[0].dataUrl || '').startsWith('data:')) {
+      return { mime, dataUrl: rows[0].dataUrl };
+    }
+    return { mime, dataUrl: 'data:' + mime + ';base64,' + rows.map(r => r.dataUrl).join('') };
+  }
+
+  async deleteAsset(kind) {
+    await this.#ready();
+    this.db.run('DELETE FROM assets WHERE kind = ?', kind);
+    return { ok: true, fjernet: this.db.changes() };
+  }
+
+  async hasAsset(kind) {
+    await this.#ready();
+    return Number(this.db.value(
+      'SELECT count(*) AS c FROM assets WHERE kind = ?', kind) ?? 0) > 0;
   }
 
   // ── Honorar ──────────────────────────────────────────────────────────────

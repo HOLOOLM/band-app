@@ -26,6 +26,18 @@ import {
   getMyHonorar, getHonorarAdmin, createInvoice,
   getInvoices, updateInvoiceStatus, deleteInvoice
 } from './honorar.js';
+import {
+  adminReadConfig, adminWriteConfig, adminSaveAppearance,
+  adminGetBillingInfo, adminSaveBillingInfo, adminUploadAsset,
+  adminDeleteAsset, getRider, getSceneplan
+} from './settings.js';
+import {
+  operatorLogin, listTenants, registerTenant, updateTenant, setTenantStatus,
+  bandHealth, getAuditLog, backupBand, migrateAllBands, deleteTenant
+} from './operator.js';
+import {
+  getAllJobs, getAllHonorar, getFeedUrl, rotateFeedToken
+} from './crossband.js';
 
 // scope: hvilket lager action'en får udleveret
 //   'band'      → ctx.band er bandets DO-stub (kræver gyldigt bandId)
@@ -89,11 +101,47 @@ export const ACTIONS = {
   createInvoice:       { scope: 'band', auth: 'admin',  fn: createInvoice },
   getInvoices:         { scope: 'band', auth: 'admin',  fn: getInvoices },
   updateInvoiceStatus: { scope: 'band', auth: 'admin',  fn: updateInvoiceStatus },
-  deleteInvoice:       { scope: 'band', auth: 'admin',  fn: deleteInvoice }
+  deleteInvoice:       { scope: 'band', auth: 'admin',  fn: deleteInvoice },
+
+  // ── Fase 3i ──────────────────────────────────────────────────────────────
+  // getRider og getSceneplan er 'member': de sendes videre til arrangører i
+  // kontrakten, så de er ikke hemmelige — men de er store, og et ulogget kald
+  // ville være en gratis måde at trække båndbredde.
+  adminReadConfig:      { scope: 'band', auth: 'admin',  fn: adminReadConfig },
+  adminWriteConfig:     { scope: 'band', auth: 'admin',  fn: adminWriteConfig },
+  adminSaveAppearance:  { scope: 'band', auth: 'admin',  fn: adminSaveAppearance },
+  adminGetBillingInfo:  { scope: 'band', auth: 'admin',  fn: adminGetBillingInfo },
+  adminSaveBillingInfo: { scope: 'band', auth: 'admin',  fn: adminSaveBillingInfo },
+  adminUploadAsset:     { scope: 'band', auth: 'admin',  fn: adminUploadAsset },
+  adminDeleteAsset:     { scope: 'band', auth: 'admin',  fn: adminDeleteAsset },
+  getRider:             { scope: 'band', auth: 'member', fn: getRider },
+  getSceneplan:         { scope: 'band', auth: 'member', fn: getSceneplan },
+
+  // ── Fase 3j ──────────────────────────────────────────────────────────────
+  // operatorLogin er 'public' fordi den ER autentifikationen; den har sin egen
+  // rate-limit i master. Alt andet kræver et gyldigt operatør-token.
+  operatorLogin:    { scope: 'none',   auth: 'public',   fn: operatorLogin },
+  listTenants:      { scope: 'master', auth: 'operator', fn: listTenants },
+  registerTenant:   { scope: 'master', auth: 'operator', fn: registerTenant },
+  updateTenant:     { scope: 'master', auth: 'operator', fn: updateTenant },
+  setTenantStatus:  { scope: 'master', auth: 'operator', fn: setTenantStatus },
+  bandHealth:       { scope: 'master', auth: 'operator', fn: bandHealth },
+  getAuditLog:      { scope: 'master', auth: 'operator', fn: getAuditLog },
+  backupBand:       { scope: 'master', auth: 'operator', fn: backupBand },
+  migrateAllBands:  { scope: 'master', auth: 'operator', fn: migrateAllBands },
+  deleteTenant:     { scope: 'master', auth: 'operator', fn: deleteTenant },
+
+  // ── Fase 3k ──────────────────────────────────────────────────────────────
+  // 'identity' er kryds-band: ingen enkelt band-kontekst. Auth sker PR. BAND
+  // inde i fan-out'en, hvor musikeren skal være medlem for at bandet tælles med.
+  getAllJobs:       { scope: 'identity', auth: 'identity', fn: getAllJobs },
+  getAllHonorar:    { scope: 'identity', auth: 'identity', fn: getAllHonorar },
+  getFeedUrl:       { scope: 'band',     auth: 'admin',    fn: getFeedUrl },
+  rotateFeedToken:  { scope: 'band',     auth: 'admin',    fn: rotateFeedToken }
 };
 
 export const VALID_SCOPES = ['band', 'master', 'identity', 'none'];
-export const VALID_AUTH = ['public', 'member', 'admin', 'operator', 'booker', 'signing'];
+export const VALID_AUTH = ['public', 'member', 'admin', 'identity', 'operator', 'booker', 'signing'];
 
 /**
  * Kontrollerer at tabellen er velformet. Kaldes af selvtesten, så en action med

@@ -11,6 +11,7 @@ import { selftest } from './do/selftest.js';
 import { benchmark } from './do/bench.js';
 import { diag, diagBillig, diagAuthorized, maalEtHash, iterFraUrl } from './do/diag.js';
 import { bandStub } from './lib/addressing.js';
+import { buildIcal } from './actions/crossband.js';
 
 export { BandDO, MasterDO };
 
@@ -53,6 +54,24 @@ export default {
           return withSecHeaders(json({ ok: false, error: 'Ikke fundet' }, 404));
         }
         return withSecHeaders(json(await diag(env)));
+      }
+      // iCal-feed. Egen GET-rute frem for /api/call, fordi et kalenderprogram
+      // ikke kan sende POST med cookie. Token i query-parameter er her det
+      // eneste mulige — kalenderklienter kan ikke sætte headers — og det er
+      // derfor tokenet kan roteres uden at røre andet.
+      if (url.pathname === '/ical') {
+        const ics = await buildIcal(env,
+          String(url.searchParams.get('band') || '').trim(),
+          String(url.searchParams.get('token') || ''));
+        return withSecHeaders(new Response(ics, {
+          status: 200,
+          headers: {
+            'Content-Type': 'text/calendar; charset=utf-8',
+            // Kalenderprogrammer poller ofte; en kort cache sparer arbejde uden
+            // at nye gigs bliver længe usynlige.
+            'Cache-Control': 'public, max-age=900'
+          }
+        }));
       }
       if (url.pathname === '/api/login')           return withSecHeaders(await apiLogin(request, env));
       if (url.pathname === '/api/operator-login')  return withSecHeaders(await apiOperatorLogin(request, env));

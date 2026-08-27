@@ -185,6 +185,61 @@ export class MasterDO extends DurableObject {
     return this.db.rows(q, String(email).toLowerCase()).map(r => r.bandId);
   }
 
+  // ── Operatører ───────────────────────────────────────────────────────────
+
+  async getOperator(email) {
+    await this.#ready();
+    return this.db.one('SELECT * FROM operators WHERE email = ?',
+      String(email || '').toLowerCase().trim());
+  }
+
+  async putOperator(email, passwordHash, pwSalt) {
+    await this.#ready();
+    this.db.run(
+      `INSERT INTO operators (email, password_hash, pw_salt) VALUES (?, ?, ?)
+         ON CONFLICT(email) DO UPDATE SET
+           password_hash = excluded.password_hash, pw_salt = excluded.pw_salt`,
+      String(email).toLowerCase().trim(), passwordHash, pwSalt);
+    return { ok: true };
+  }
+
+  // Rate-limit på operatør-login. Ligger i master-meta som flygtige rækker —
+  // de hører ikke i audit-loggen og har ingen værdi efter vinduet er udløbet.
+  async operatorLoginState(email, maxAttempts, lockSeconds) {
+    await this.#ready();
+    const key = 'oplock:' + String(email || '').toLowerCase().trim();
+    const raw = this.db.value('SELECT value FROM master_meta WHERE key = ?', key);
+    if (!raw) return { locked: false, attempts: 0 };
+    let st;
+    try { st = JSON.parse(raw); } catch (e) { return { locked: false, attempts: 0 }; }
+    if (!st.until || Date.parse(st.until) <= Date.now()) {
+      this.db.run('DELETE FROM master_meta WHERE key = ?', key);
+      return { locked: false, attempts: 0 };
+    }
+    return { locked: st.attempts >= maxAttempts, attempts: st.attempts };
+  }
+
+  async penalizeOperatorLogin(email, maxAttempts, lockSeconds) {
+    await this.#ready();
+    const key = 'oplock:' + String(email || '').toLowerCase().trim();
+    const st = await this.operatorLoginState(email, maxAttempts, lockSeconds);
+    const attempts = st.attempts + 1;
+    this.db.run(
+      `INSERT INTO master_meta (key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      key, JSON.stringify({
+        attempts, until: new Date(Date.now() + lockSeconds * 1000).toISOString()
+      }));
+    return { locked: attempts >= maxAttempts, attempts };
+  }
+
+  async clearOperatorLoginAttempts(email) {
+    await this.#ready();
+    this.db.run('DELETE FROM master_meta WHERE key = ?',
+      'oplock:' + String(email || '').toLowerCase().trim());
+    return { ok: true };
+  }
+
   // ── Audit ────────────────────────────────────────────────────────────────
   // Ligger i master, fordi operatøren skal kunne læse på tværs af bands i én
   // forespørgsel. Skrivninger sker fra band-objekter via RPC, men aldrig på en

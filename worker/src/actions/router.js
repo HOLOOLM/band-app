@@ -75,6 +75,23 @@ export async function runAction(env, actionName, p, creds) {
         break;
       }
 
+      case 'identity': {
+        // Kryds-band. Der er INGEN band-kontekst her, så vi kan ikke verificere
+        // mod en medlemsrække endnu — det sker pr. band inde i fan-out'en, hvor
+        // musikeren skal være medlem for at bandet tælles med.
+        //
+        // Her tjekker vi kun at e-mailen har et identitetskort, altså at den
+        // hører til mindst ét band. Det forhindrer at en vilkårlig e-mail kan
+        // udløse en fan-out.
+        if (!creds || !creds.email || !creds.token) throw userError('Ikke logget ind');
+        const { canonicalPassword } = await import('../auth/identity.js');
+        const id = await canonicalPassword(env, creds.email);
+        if (!id) throw userError('Ikke logget ind');
+        ctx.creds = creds;
+        ctx.identity = id;
+        break;
+      }
+
       case 'operator': {
         const op = await verifyOperator(env, creds && creds.operatorToken);
         if (!op) throw userError('Kræver operatør-adgang');
