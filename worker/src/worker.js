@@ -62,9 +62,28 @@ export default {
       // eneste mulige — kalenderklienter kan ikke sætte headers — og det er
       // derfor tokenet kan roteres uden at røre andet.
       if (url.pathname === '/ical') {
-        const ics = await buildIcal(env,
-          String(url.searchParams.get('band') || '').trim(),
-          String(url.searchParams.get('token') || ''));
+        const feedBand = String(url.searchParams.get('band') || '').trim();
+        const feedToken = String(url.searchParams.get('token') || '');
+        // Respektér omskiftningsflaget. Læste ruten altid fra Durable Objects,
+        // ville et abonnement på et Apps Script-band få et TOMT kalendersvar.
+        let ics;
+        if (usesDurableObjects(env, feedBand)) {
+          ics = await buildIcal(env, feedBand, feedToken);
+        } else {
+          // Apps Scripts doGet håndterer ?action=ical og svarer med rå
+          // text/calendar — ikke JSON. Derfor hentes den som tekst her.
+          const u = new URL(env.SCRIPT_URL);
+          u.searchParams.set('action', 'ical');
+          u.searchParams.set('band', feedBand);
+          u.searchParams.set('token', feedToken);
+          try {
+            const r = await fetch(u.toString(), { redirect: 'follow' });
+            ics = await r.text();
+          } catch (e) {
+            console.error('iCal-proxy til Apps Script fejlede: ' + (e && e.message || e));
+            ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'END:VCALENDAR'].join('\r\n');
+          }
+        }
         return withSecHeaders(new Response(ics, {
           status: 200,
           headers: {

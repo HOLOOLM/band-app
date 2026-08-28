@@ -882,7 +882,12 @@ function opRenderEditor(){
 }
 
 let OP_FEED_URL = '';
-function opFeedUrl(token){ return location.origin + location.pathname + '?action=ical&band=' + encodeURIComponent(OP_CFG._bandId) + '&token=' + encodeURIComponent(token); }
+// Feedet serveres af Workerens /ical-rute. FØR: location.pathname + '?action=ical',
+// som pegede på app-roden — den rute fandtes ikke i Workeren, så et
+// kalenderabonnement hentede index.html i stedet for en kalender. Fejlen har
+// været der siden Worker-migreringen; dengang appen kaldte Apps Script direkte,
+// ramte ?action=ical dens doGet.
+function opFeedUrl(token){ return location.origin + '/ical?band=' + encodeURIComponent(OP_CFG._bandId) + '&token=' + encodeURIComponent(token); }
 
 async function opLoadFeed(){
   const box = document.getElementById('opFeedBox');

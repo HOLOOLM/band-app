@@ -53,6 +53,10 @@ export async function scheduled(event, env, ctx) {
   if (fejl.length) {
     for (const f of fejl) console.error('Cron-fejl for ' + f.bandId + ': ' + f.error);
   }
+
+  // Returneres så runRetentionNow kan vise tallene til operatøren. Cron-kalderen
+  // ignorerer returværdien.
+  return { bands: bands.length, sum, fejlede: fejl };
 }
 
 async function ryd(env, bandId) {

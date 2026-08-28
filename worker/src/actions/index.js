@@ -34,7 +34,7 @@ import {
 import {
   operatorLogin, listTenants, registerTenant, updateTenant, setTenantStatus,
   bandHealth, getAuditLog, backupBand, migrateAllBands, deleteTenant,
-  operatorChangePassword
+  operatorChangePassword, adminResetMemberPassword, runRetentionNow
 } from './operator.js';
 import {
   getAllJobs, getAllHonorar, getFeedUrl, rotateFeedToken
@@ -140,6 +140,13 @@ export const ACTIONS = {
   setTenantStatus:  { scope: 'master', auth: 'operator', fn: setTenantStatus },
   bandHealth:       { scope: 'master', auth: 'operator', fn: bandHealth },
   operatorChangePassword: { scope: 'master', auth: 'operator', fn: operatorChangePassword },
+  // Tre actions frontenden kalder, som manglede i tabellen. Fundet ved at
+  // sammenligne alle 63 action-navne frontenden bruger mod denne tabel.
+  adminResetMemberPassword: { scope: 'master', auth: 'operator', fn: adminResetMemberPassword },
+  runRetentionNow:          { scope: 'master', auth: 'operator', fn: runRetentionNow },
+  // adminDeleteBand er bandets EGEN admin der sletter sit band; deleteTenant er
+  // operatørens vej til det samme. Begge kræver bekræftelse med band-id.
+  adminDeleteBand:          { scope: 'band',   auth: 'admin',    fn: deleteTenant },
   getAuditLog:      { scope: 'master', auth: 'operator', fn: getAuditLog },
   backupBand:       { scope: 'master', auth: 'operator', fn: backupBand },
   migrateAllBands:  { scope: 'master', auth: 'operator', fn: migrateAllBands },

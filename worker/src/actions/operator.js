@@ -15,6 +15,7 @@ import { SETTINGS_DEFAULTS, ALL_SETTINGS_KEYS } from '../lib/settings-defaults.j
 import { BAND_SCHEMA_VERSION } from '../do/schema.js';
 import { genTempPassword } from './members.js';
 import { registerIdentity } from '../auth/identity.js';
+import { sendMail } from '../services/mail.js';
 
 const OPERATOR_TOKEN_TTL_SEC = 8 * 60 * 60;
 const LOGIN_MAX_ATTEMPTS = 5;
@@ -140,6 +141,60 @@ export async function operatorChangePassword(ctx) {
   return { ok: true, bemaerk: 'Udestående operatør-sessioner udløber inden for 8 timer.' };
 }
 
+/**
+ * adminResetMemberPassword — operatøren nulstiller et medlems kode.
+ *
+ * Findes ved SIDEN af resetPassword (som en band-admin bruger), fordi
+ * operatøren ikke er medlem af bandet og derfor ikke har en admin-session der.
+ * Frontenden identificerer medlemmet ved e-mail, ikke id (09-boot.js:1182) —
+ * operatøren ser bandets medlemsliste udefra og har ikke id'erne.
+ */
+export async function adminResetMemberPassword(ctx) {
+  const { env, p, operator } = ctx;
+  const bandId = String(p.bandId || p.targetBandId || '').trim();
+  const email = String(p.memberEmail || p.email || '').toLowerCase().trim();
+  if (!bandId) return { ok: false, error: 'bandId mangler' };
+  if (!email) return { ok: false, error: 'memberEmail mangler' };
+
+  const band = bandStub(env, bandId);
+  const m = await band.findMemberByEmail(email);
+  if (!m) return { ok: false, error: 'Ingen bruger med den email' };
+
+  const tempPassword = genTempPassword();
+  const pf = await newPasswordFields(await sha256hex(tempPassword), pwIterations(env));
+  const r = await band.setMemberPassword(m.id, pf.passwordHash, pf.pwSalt, true);
+  if (!r.ok) return { ok: false, error: 'Kunne ikke nulstille' };
+
+  // Som resetPassword: koden er delt på tværs af musikerens bands, så
+  // nulstillingen skrives ud til dem alle.
+  const { syncPasswordAcrossBands } = await import('../auth/identity.js');
+  await syncPasswordAcrossBands(env, email, pf, bandId);
+
+  await masterStub(env).audit(operator.email, 'kode-nulstillet', bandId, email);
+  // Feltnavnet er seedPassword, fordi 09-boot.js:1183 læser netop det.
+  return { ok: true, seedPassword: tempPassword };
+}
+
+/**
+ * runRetentionNow — kører den natlige oprydning med det samme.
+ *
+ * Samme arbejde som cron'en, men på forlangende. Nyttigt når man netop har
+ * sænket et bands opbevaringspolitik og vil se effekten frem for at vente til
+ * 02:00.
+ */
+export async function runRetentionNow(ctx) {
+  const { env, operator } = ctx;
+  const { scheduled } = await import('../scheduled.js');
+  const r = await scheduled({ scheduledTime: Date.now(), cron: 'manuel' }, env, null);
+  await masterStub(env).audit(operator.email, 'oprydning-koert-manuelt', '', '');
+  return {
+    ok: true,
+    // scheduled() logger detaljerne; her returneres nok til at UI'et kan bekræfte.
+    bemaerk: 'Oprydningen er kørt. Se wrangler tail for tal pr. band.',
+    resultat: r || null
+  };
+}
+
 /** listTenants — én forespørgsel mod master, uafhængigt af antal bands. */
 export async function listTenants(ctx) {
   const rows = await ctx.master.listBands();
@@ -161,7 +216,10 @@ export async function listTenants(ctx) {
  */
 export async function registerTenant(ctx) {
   const { env, p, operator } = ctx;
-  const bandId = String(p.bandId || '').trim().toLowerCase();
+  // Frontenden sender newBandId — samme navn som Apps Script har brugt hele
+  // tiden (actRegisterTenant). bandId er selvtestens navn og accepteres som
+  // alias; læses kun newBandId, kan operatøren IKKE oprette et band fra UI'et.
+  const bandId = String(p.newBandId || p.bandId || '').trim().toLowerCase();
   const bandName = String(p.bandName || '').trim();
   if (!/^[a-z0-9-]{2,40}$/.test(bandId)) {
     return { ok: false, error: 'band-id må kun indeholde små bogstaver, tal og bindestreg (2-40 tegn)' };
@@ -223,7 +281,44 @@ export async function registerTenant(ctx) {
   await master.audit(operator.email, 'band-oprettet', bandId,
     bandName + (p.templateBandId ? (' (skabelon: ' + p.templateBandId + ')') : ''));
 
-  const svar = { ok: true, bandId, name: bandName };
+  // Onboarding-email. Operatør-panelet har et hak til den (09-boot.js sender
+  // sendOnboardingEmail + loginUrl), og uden dette blok gjorde hakket ingenting.
+  //
+  // Fire-and-forget: en mislykket mail må ikke fortryde et oprettet band. Vi
+  // rapporterer i stedet om den blev sendt, så operatøren ved om koden skal
+  // gives videre manuelt.
+  let emailSendt = false;
+  if (p.sendOnboardingEmail && p.adminEmail && tempPassword) {
+    try {
+      const loginUrl = String(p.loginUrl || '').trim();
+      await sendMail(env, {
+        to: String(p.adminEmail).trim(),
+        subject: 'Velkommen til ' + bandName + ' – din band-app',
+        text: [
+          'Hej' + (p.adminName ? ' ' + String(p.adminName).trim() : '') + ',',
+          '',
+          'Der er oprettet en band-app til ' + bandName + ', og du er sat op som administrator.',
+          '',
+          loginUrl ? ('Log ind her:\n' + loginUrl) : ('Band-id: ' + bandId),
+          '',
+          'Email: ' + String(p.adminEmail).trim(),
+          'Midlertidig adgangskode: ' + tempPassword,
+          '',
+          'Du bliver bedt om at vælge en ny adgangskode første gang du logger ind.',
+          '',
+          'God fornøjelse!'
+        ].join('\n')
+      });
+      emailSendt = true;
+      await master.audit(operator.email, 'onboarding-email-sendt', bandId,
+        String(p.adminEmail).trim());
+    } catch (e) {
+      console.warn('Onboarding-email fejlede (band oprettet alligevel): ' +
+                   (e && e.message || e));
+    }
+  }
+
+  const svar = { ok: true, bandId, name: bandName, emailSent: emailSendt };
   if (tempPassword) svar.seedPassword = tempPassword;
   else if (p.adminEmail) svar.eksisterendeBruger = true;
   return svar;

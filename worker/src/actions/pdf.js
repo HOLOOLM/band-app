@@ -95,8 +95,17 @@ export async function renderInvoicePdf(env, band, bandId, contractId) {
  */
 export async function archiveInvoiceToDrive(ctx) {
   const { env, band, bandId, p } = ctx;
-  const contractId = String(p.contractId || '').trim();
-  if (!contractId) return { ok: false, error: 'contractId mangler' };
+  // Frontenden sender invoiceId (08-admin.js:457) — den har allerede oprettet
+  // fakturaen og vil kun arkivere den. contractId accepteres også, så en kalder
+  // der kun kender kontrakten kan oprette-og-arkivere i ét kald.
+  let contractId = String(p.contractId || '').trim();
+  const invoiceId = String(p.invoiceId || '').trim();
+  if (!contractId && invoiceId) {
+    const eksisterende = await band.getInvoice(invoiceId);
+    if (!eksisterende) return { ok: false, error: 'Faktura ikke fundet' };
+    contractId = String(eksisterende.contractId || '');
+  }
+  if (!contractId) return { ok: false, error: 'contractId eller invoiceId mangler' };
 
   const inv = await band.createInvoice(contractId);
   if (!inv || !inv.ok) return inv || { ok: false, error: 'Kunne ikke reservere fakturanr' };
