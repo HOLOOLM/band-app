@@ -14,9 +14,9 @@ autoritativ på *hvor vi er*.
 |---|---|
 | Alle faser (1–6) | **Kodet, testet og deployet** |
 | Selvtest | **440 tjek, alle grønne**, verificeret idempotent over gentagne kørsler |
-| Ny Worker-kode | 10.138 linjer i 44 moduler, 73 actions |
+| Kontraktrevision | **Ren** — `node worker/tools/audit-actions.mjs` |
+| Ny Worker-kode | ~10.400 linjer i 45 moduler, 76 actions |
 | `Code.gs` → sidecar | 4.762 → 288 linjer (`apps-script/Sidecar.gs`) |
-| Commits | 23, alle pushet til `main` (HEAD: `508e45b`) |
 | **I DRIFT** | **Nej.** `BACKEND = "sheets"` — alt kører fortsat på Apps Script |
 
 Det nye datalag er altså bygget færdigt og ligger i produktion, men ingen bruger
@@ -26,22 +26,22 @@ det. Frontenden er uændret bortset fra tre filer (se "Ændret i frontenden").
 
 ## Næste skridt, i rækkefølge
 
-### 1. Indsæt den opdaterede `Code.gs` i Apps Script  ← START HER
+### 1. ~~Indsæt den opdaterede `Code.gs` i Apps Script~~ ✅ GJORT 27/8
 
-**Hvorfor det er først:** de fem nye HEX-felter i operatør-panelet kan ikke gemmes
-i dag. Frontenden sender dem, men den kørende `Code.gs` filtrerer ukendte nøgler
-væk med et bart `return` i `_setSettings`. Du får "Udseende gemt", genindlæser, og
-felterne er blanke. Intet går i stykker — men det er forvirrende, og rettelsen
-ligger klar.
+De fem nye HEX-felter kan nu gemmes. Før dette filtrerede den kørende `Code.gs`
+ukendte nøgler væk med et bart `return`, så man fik "Udseende gemt" og blanke
+felter efter genindlæsning.
 
-Kopiér `apps-script/Code.gs` fra repoet ind i editoren og deploy en ny version.
-Dette gælder uanset om du går videre med omskiftningen.
+### 2. Verificér at den live app er intakt  ← START HER
 
-### 2. Verificér at den live app er intakt
+Dette er den ENESTE ting der stadig ikke er tjekket, og det kræver **band-id'et**
+— giv det til en ny chat, så kan den indlæse siden, læse konsollen og bekræfte
+det. Åbn appen med `?band=<dit-id>`, log ind, og se om branding, logo og
+dashboard ser rigtigt ud.
 
-Dette er den ENESTE ting jeg ikke kunne tjekke: jeg manglede band-id'et. Åbn
-appen med `?band=<dit-id>`, log ind, og se om branding, logo og dashboard ser
-rigtigt ud.
+Tjek også et af de nye HEX-felter under Indstillinger → Finjustér nuancer: gem en
+værdi, genindlæs, og se om den står der. Det er beviset på at `Code.gs`-deployet
+tog fat.
 
 Jeg har til gengæld verificeret:
 - de tre ændrede frontend-filer er hentet fra produktion og parser
@@ -128,6 +128,28 @@ midt i et forløb.
 hentes i Resend-dashboardet.
 
 ---
+
+## Kør denne efter enhver ændring i action-tabellen
+
+```
+node worker/tools/audit-actions.mjs
+```
+
+Den sammenligner de 63 action-navne frontenden faktisk kalder med
+action-tabellen, og fanger to fejlklasser: en action frontenden kalder som ikke
+findes, og et parameternavn ingen action læser.
+
+**Hvorfor den findes:** seks fejl slap gennem 440 selvtest-tjek OG en manuel
+gennemklikning, fordi begge kalder actions med de navne implementeringen selv
+bruger — frontenden bruger andre. `registerTenant` læste `bandId`, men frontenden
+sender `newBandId`, så operatøren kunne ikke oprette et band. Tre actions manglede
+helt (`adminResetMemberPassword`, `runRetentionNow`, `adminDeleteBand`), og
+`bandHealth`, `backupBand` og `archiveInvoiceToDrive` læste forkerte
+parameternavne. Alle rettet 27/8; revisionen er ren.
+
+**Test-dækning beviser ikke kontrakt-overholdelse.** Det er den vigtigste lektion
+fra dagen, og grunden til at dette værktøj skal køres frem for at man stoler på
+grønne tjek.
 
 ## Fem arkitekturvalg der er lette at bryde
 
@@ -242,6 +264,14 @@ binær: gennemføres requesten, passede den.
 - **Operatør-tokens dør ikke ved kodeskift**, som medlems-tokens gør via `pwFp`.
   Er koden kompromitteret, skift `MASTER_SECRET` for at dræbe alle tokens.
 - **Ingen har klikket igennem den live app** — kun lokalt. Se skridt 2.
+- **iCal-feedet var i stykker siden juli** — før dette arbejde. Frontenden byggede
+  URL'en som `location.pathname + '?action=ical'`, hvilket pegede på app-roden;
+  den gamle Worker havde ingen sådan rute, så et kalenderabonnement hentede
+  `index.html`. Rettet 27/8: frontenden peger på `/ical`, og ruten proxyer til
+  Apps Script når flaget er `sheets`. **Ikke verificeret mod et rigtigt
+  kalenderprogram** — værd at prøve når band-id'et er kendt.
+- **Onboarding-emailen var en tom knap** indtil 27/8. Nu implementeret via
+  Resend, men kan først virke når `RESEND_API_KEY` og `MAIL_FROM` er sat.
 - **Planens 12-trins gennemklikning** er ikke kørt i sin helhed. Den dækker
   konflikt i to faner, signeringsflow, booker-portal, kryds-band og
   isolationstest. Kan køres når der er et band på det nye lag.
