@@ -88,11 +88,42 @@ versionsstyret fil — de må aldrig bruges i produktion.**
 Jeg har allerede klikket igennem lokalt: login, tvunget kodeskift, dashboard,
 kontrakter, medlemmer, honorar. Alt renderede korrekt med rigtige tal.
 
-### 5. Sæt sidecaren op — så virker PDF, afstand og mail
+### 5. Sidecaren — Apps Script-siden er ✅ GJORT 29/8
 
-Uden denne virker tre ting ikke: PDF-dannelse, køreafstand og udgående mail.
-**Alt andet virker.** Sidecaren arkiverer ikke længere — det gør R2 nu — så den
-er skrumpet til 219 linjer og fire operationer.
+Sidecaren har **overtaget det eksisterende Apps Script-projekt** frem for at få
+sit eget. Derfor er `/exec`-URL'en uændret, og `SIDECAR_URL` var kendt på
+forhånd. Prisen er at tilbagerulning til Sheets ikke er ét flag længere:
+`Code.gs` er overskrevet, så en tilbagerulning kræver **Udrul → Administrer
+udrulninger → rediger → vælg en tidligere version** (~5 min), eller at
+`apps-script/Code.gs` indsættes igen fra repoet.
+
+Verificeret 29/8: `doGet` svarer `{"ok":true,"sidecar":true}`, og `ping` med det
+rigtige token svarer `{"ok":true,"op":"ping"}`.
+
+**Mangler stadig:** `SIDECAR_TOKEN` som hemmelighed i Cloudflare. Uden den kan
+Workeren ikke kalde sidecaren — men Apps Script-siden er færdig.
+
+Tre ting afhænger af sidecaren: PDF-dannelse, køreafstand og udgående mail.
+**Alt andet virker.** Den arkiverer ikke længere — det gør R2 nu — så den er
+skrumpet til 245 linjer og fire operationer.
+
+### Faldgruber der kostede tid (29/8)
+
+- **Drive API v2 kan ikke længere vælges.** Google vælger v3, hvor metoden
+  hedder `create` og ikke `insert`. Sidecaren understøtter nu begge.
+- **`appsscript.json` havde to Drive-tjenester** efter v3 blev tilføjet oven på
+  den gamle v2-linje. Apps Script nægter at gemme: *"tjeneste-id brugt mere end
+  én gang"*. Manifestet i repoet er rettet til kun v3.
+- **curl uden `-L` giver et TOMT svar.** Apps Script svarer med et viderestil.
+  Og `-X POST` sammen med `-L` gentager POST mod viderestillet, hvilket ikke
+  virker — brug `-d` alene, eller PowerShells `Invoke-RestMethod`, som er
+  langt mindre følsom over for anførselstegn på Windows:
+
+```powershell
+$url = '<sidecarens /exec>'
+$body = '{"op":"ping","sidecarToken":"<token>"}'
+Invoke-RestMethod -Method Post -Uri $url -ContentType 'text/plain' -Body $body
+```
 
 1. Indsæt `apps-script/Sidecar.gs` i et Apps Script-projekt (opsætningen står i
    filens hoved)
