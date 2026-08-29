@@ -67,7 +67,14 @@ SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzc3u_E4EIZLZXiDoJfSAZyHS0
 # hemmeligheden SIDECAR_TOKEN) er sidecaren slået fra, og de fire funktioner
 # der kræver Google — PDF, Drive-arkivering, afstand, papirkurv — svarer med
 # en pæn fejl frem for at gå ned. Se worker/src/services/sidecar.js.
-# SIDECAR_URL = "https://script.google.com/macros/s/DIT-NYE-SIDECAR-ID/exec"
+# Samme /exec som SCRIPT_URL ovenfor. Det er MED VILJE: sidecaren overtager
+# det eksisterende Apps Script-projekt frem for at få sit eget, og en
+# opdateret udrulning beholder sin URL. Opretter man i stedet en NY
+# udrulning, skifter URL'en, og denne linje skal rettes.
+#
+# Harmløs indtil et band faktisk ligger på Durable Objects: sidecaren kaldes
+# kun fra det nye datalag, og BACKEND er stadig "sheets".
+SIDECAR_URL = "https://script.google.com/macros/s/AKfycbzc3u_E4EIZLZXiDoJfSAZyHS0wWJCib_evu98htcSX6qzsZhraxzTIeeQ-gWjpq1o/exec"
 
 # ── UDGÅENDE MAIL ──────────────────────────────────────────────────────────
 # Afsenderadressen Resend sender fra. Kræver at domænet er verificeret med
