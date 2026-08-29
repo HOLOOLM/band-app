@@ -96,7 +96,8 @@ er skrumpet til 219 linjer og fire operationer.
 
 1. Indsæt `apps-script/Sidecar.gs` i et Apps Script-projekt (opsætningen står i
    filens hoved)
-2. Slå Advanced Drive Service til: Tjenester → Drive API → v2
+2. Slå Advanced Drive Service til: Tjenester → Drive API → Tilføj (versionen er
+   ligegyldig — sidecaren understøtter både v3 og v2)
 3. Deploy som web app: *Kør som mig*, *Adgang: Alle*
 4. Kør `setSidecarToken_RUN_ME()` med samme værdi du uploader nedenfor
 5. Upload hemmeligheder og sæt vars:
