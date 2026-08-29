@@ -80,9 +80,19 @@ SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzc3u_E4EIZLZXiDoJfSAZyHS0
 # Arkiverede honorarafregninger. Lå før i operatørens personlige Google Drive —
 # se services/archive.js for hvorfor det var forkert.
 #
-# Bucket'en SKAL oprettes med location hint EU. Ligesom jurisdiction("eu") på
-# Durable Objects er placeringen en del af bucket'ens identitet og kan IKKE
-# ændres bagefter — kun ved at oprette en ny og kopiere alt over.
+# Bucket'en SKAL oprettes med JURISDIKTION EU — ikke med et "location hint".
+# Forskellen er ikke kosmetisk:
+#
+#   location hint   et ønske om hvor data helst må ligge. Best effort, ingen
+#                   garanti, og derfor ubrugeligt som GDPR-argument.
+#   jurisdiction    en hård garanti om at objekterne ligger i EU.
+#
+# Jurisdiktionen er en del af bucket'ens identitet og kan IKKE ændres bagefter —
+# kun ved at oprette en ny bucket og kopiere alt over. Præcis samme situation
+# som jurisdiction("eu") på Durable Objects.
+#
+# Linjen nedenfor skal matche bucket'en: uden `jurisdiction` leder Workeren i
+# standard-jurisdiktionen og finder ingenting.
 #
 # Bucket'en må ALDRIG gøres offentlig og må ikke have et r2.dev-domæne. Selvom
 # arkivkopien er CPR-fri, er en honorarafregning stadig persondata, og adgangen
@@ -90,3 +100,4 @@ SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzc3u_E4EIZLZXiDoJfSAZyHS0
 [[r2_buckets]]
 binding = "ARCHIVE"
 bucket_name = "band-app-arkiv"
+jurisdiction = "eu"

@@ -62,11 +62,18 @@ Fakturaarkivet er flyttet fra Google Drive til Cloudflare R2. `wrangler.toml`
 har nu en `[[r2_buckets]]`-binding, og **et deploy fejler indtil bucket'en
 findes**. Derfor ligger ændringen som en lokal commit og er ikke pushet.
 
-1. [dash.cloudflare.com](https://dash.cloudflare.com) → **R2** → **Create bucket**
-2. Navn: **`band-app-arkiv`** (præcis dette — det står i `wrangler.toml`)
-3. Location: vælg **EU**
+1. [dash.cloudflare.com](https://dash.cloudflare.com) → **Storage & databases**
+   → **R2** → gennemfør abonnementsflowet (kræver et betalingskort, se nedenfor)
+2. **Create bucket**, navn: **`band-app-arkiv`** (præcis dette — det står i
+   `wrangler.toml`)
+3. Fold **Specify jurisdiction** ud og vælg **European Union (EU)**
 
-**Punkt 3 kan ikke fortrydes.** Placeringen er en del af bucket'ens identitet,
+**Vælg jurisdiktion, ikke "location hint".** De to ting ligner hinanden i
+menuen, men et location hint er kun et ønske — best effort, ingen garanti — og
+duer derfor ikke som GDPR-argument. En jurisdiktion er en hård garanti om at
+objekterne bliver i EU.
+
+**Punkt 3 kan ikke fortrydes.** Jurisdiktionen er en del af bucket'ens identitet,
 ligesom `jurisdiction('eu')` på Durable Objects. Vælger du forkert, kræver det
 en ny bucket og en kopiering af alt indhold. Appen gemmer persondata.
 
