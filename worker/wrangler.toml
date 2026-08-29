@@ -61,3 +61,17 @@ BACKEND = "sheets"
 # fordi hashen gemmer sit eget iterationstal.
 PW_ITERATIONS = "10000"
 SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzc3u_E4EIZLZXiDoJfSAZyHS0wWJCib_evu98htcSX6qzsZhraxzTIeeQ-gWjpq1o/exec"
+
+# ── SIDECAR ────────────────────────────────────────────────────────────────
+# Apps Script-sidecarens /exec-URL. Indtil BEGGE dele er sat (denne var OG
+# hemmeligheden SIDECAR_TOKEN) er sidecaren slået fra, og de fire funktioner
+# der kræver Google — PDF, Drive-arkivering, afstand, papirkurv — svarer med
+# en pæn fejl frem for at gå ned. Se worker/src/services/sidecar.js.
+# SIDECAR_URL = "https://script.google.com/macros/s/DIT-NYE-SIDECAR-ID/exec"
+
+# ── UDGÅENDE MAIL ──────────────────────────────────────────────────────────
+# Afsenderadressen Resend sender fra. Kræver at domænet er verificeret med
+# SPF/DKIM i Resend — ellers ryger mailen i spam eller afvises.
+# Til afprøvning kan "onboarding@resend.dev" bruges uden verificeret domæne,
+# men den kan KUN sende til den mailadresse Resend-kontoen er oprettet med.
+# MAIL_FROM = "band-app@dit-domaene.dk"
