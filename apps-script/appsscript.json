@@ -4,7 +4,7 @@
     "enabledAdvancedServices": [
       {
         "userSymbol": "Drive",
-        "version": "v2",
+        "version": "v3",
         "serviceId": "drive"
       }
     ]
@@ -16,10 +16,7 @@
     "access": "ANYONE_ANONYMOUS"
   },
   "oauthScopes": [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/script.external_request",
     "https://www.googleapis.com/auth/drive",
-    "https://www.googleapis.com/auth/script.send_mail",
-    "https://www.googleapis.com/auth/script.scriptapp"
+    "https://www.googleapis.com/auth/script.external_request"
   ]
 }
