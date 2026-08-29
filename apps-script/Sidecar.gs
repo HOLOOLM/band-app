@@ -5,9 +5,13 @@
  * Sidecaren laver KUN de tre-fire ting hvor Google faktisk er en fordel:
  *
  *   renderPdf(html, fileName)      HTML → PDF via Drive-Docs-konvertering
- *   archivePdf(...)                gem PDF i bandets Drive-arkiv
  *   calcDistance(origin, dest)     køreafstand via Maps
- *   trashFile(fileId)              flyt en fil til papirkurven
+ *   trashFile(fileId)              flyt en fil til papirkurven (kun gamle filer)
+ *
+ * Sidecaren ARKIVERER IKKE. Det gjorde den før, og den skrev til den deployende
+ * Google-kontos egen Drive-rod — så hvert bands fakturaer landede i én persons
+ * private drev, låst så ingen anden kunne åbne dem. Arkivet ligger nu i
+ * Cloudflare R2; se worker/src/services/archive.js.
  *
  * Den er STATELESS: ingen Sheets, ingen tenants, ingen brugere, ingen sessioner.
  * Al data kommer med i request-body. Den kender ikke datamodellen — Workeren
@@ -90,7 +94,6 @@ function _authOk(given) {
 function _handle(op, body) {
   switch (op) {
     case 'renderPdf':    return _renderPdf(body);
-    case 'archivePdf':   return _archivePdf(body);
     case 'calcDistance': return _calcDistance(body);
     case 'trashFile':    return _trashFile(body);
     case 'ping':         return { ok: true, op: 'ping' };
@@ -159,72 +162,6 @@ function _viaDriveDocs(html, navn) {
   }
 }
 
-// ── archivePdf ──────────────────────────────────────────────────────────────
-
-/**
- * Gemmer en PDF i Band-app/<bandId>/<mappenavn>/<år>/.
- *
- * Mapperne låses til privat adgang, så et PDF-link ikke virker for tilfældige
- * med adressen — kun for dem du eksplicit deler med. Fakturaer indeholder CPR.
- */
-function _archivePdf(body) {
-  var pdfBase64 = String(body.pdfBase64 || '');
-  if (!pdfBase64) return { ok: false, error: 'pdfBase64 mangler' };
-  if (pdfBase64.length > MAX_INPUT_BYTES) return { ok: false, error: 'PDF er for stor' };
-
-  var bandId = _renseId(body.bandId);
-  if (!bandId) return { ok: false, error: 'bandId mangler' };
-  var navn = _renseFilnavn(body.fileName || 'dokument');
-  var aar = String(body.year || new Date().getFullYear()).replace(/\D/g, '') || 'ukendt';
-
-  var advarsel = '';
-  // Erstat en tidligere version FØR vi lægger den nye, så der aldrig ligger to.
-  if (body.replaceFileId) {
-    try { DriveApp.getFileById(String(body.replaceFileId)).setTrashed(true); }
-    catch (e) {
-      console.error('Kunne ikke trashe gammel fil ' + body.replaceFileId + ': ' + e);
-      advarsel = 'Den gamle Drive-fil kunne ikke fjernes — der kan ligge en forældet kopi.';
-    }
-  }
-
-  var mappe = _mappe(bandId, String(body.folderName || 'Fakturaer'), aar);
-  var blob = Utilities.newBlob(
-    Utilities.base64Decode(pdfBase64), 'application/pdf', navn + '.pdf');
-  var fil = mappe.createFile(blob);
-  _laasNed(fil);
-
-  console.log('archivePdf: ' + bandId + '/' + aar + '/' + navn);
-  var ud = { ok: true, fileId: fil.getId(), url: fil.getUrl() };
-  if (advarsel) ud.warning = advarsel;
-  return ud;
-}
-
-/** Opretter mappekæden lazy. Hver ny mappe låses ned med det samme. */
-function _mappe(bandId, mappenavn, aar) {
-  var rod = _underMappe(DriveApp.getRootFolder(), 'Band-app');
-  var band = _underMappe(rod, bandId);
-  var arkiv = _underMappe(band, mappenavn);
-  return _underMappe(arkiv, aar);
-}
-
-function _underMappe(forælder, navn) {
-  var it = forælder.getFoldersByName(navn);
-  if (it.hasNext()) return it.next();
-  var ny = forælder.createFolder(navn);
-  _laasNed(ny);
-  return ny;
-}
-
-function _laasNed(driveObj) {
-  try {
-    driveObj.setSharing(DriveApp.Access.PRIVATE, DriveApp.Permission.NONE);
-  } catch (e) {
-    // Ikke fatalt, men værd at vide: en fil der ikke kunne låses, er delbar via
-    // link. Fakturaer indeholder CPR, så det skal ses i loggen.
-    console.error('Kunne ikke låse Drive-objekt ned: ' + e);
-  }
-}
-
 // ── calcDistance ────────────────────────────────────────────────────────────
 
 /**
@@ -279,10 +216,4 @@ function _renseFilnavn(s) {
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 120) || 'dokument';
-}
-
-/** bandId bliver et mappenavn — kun det tegnsæt band-id'er må have. */
-function _renseId(s) {
-  var v = String(s || '').toLowerCase().trim();
-  return /^[a-z0-9-]{1,40}$/.test(v) ? v : '';
 }

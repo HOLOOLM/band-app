@@ -505,7 +505,27 @@ export async function deleteTenant(ctx) {
     console.error('Kunne ikke rydde band-objektet for ' + bandId + ': ' + (e && e.message || e));
     return { ok: false, error: 'Kunne ikke rydde bandets data — intet er slettet. Fejlen er logget.' };
   }
+  // Bandets fakturaer ligger uden for Durable Object'et og overlever derfor
+  // wipe(). De indeholder CPR, så de skal væk sammen med resten — ellers ville
+  // "slet band permanent" efterlade det mest følsomme data intakt.
+  let arkiv = { deleted: 0 };
+  try {
+    const { deleteBandArchive } = await import('../services/archive.js');
+    arkiv = await deleteBandArchive(env, bandId);
+  } catch (e) {
+    // Bandet ER slettet på dette tidspunkt; at fejle her ville efterlade en
+    // halvt slettet tilstand. Advar i stedet, så nogen kan rydde op.
+    console.error('deleteTenant: kunne ikke tømme arkivet for ' + bandId + ': ' +
+                  (e && e.stack || e));
+    await master.deleteBand(bandId, operator.email, bandRow.name);
+    await master.audit(operator.email, 'band-SLETTET-permanent', bandId, bandRow.name);
+    return {
+      ok: true,
+      warning: 'Bandet er slettet, men fakturaarkivet kunne ikke tømmes. Fejlen er logget — arkivet skal ryddes manuelt.'
+    };
+  }
+
   await master.deleteBand(bandId, operator.email, bandRow.name);
   await master.audit(operator.email, 'band-SLETTET-permanent', bandId, bandRow.name);
-  return { ok: true };
+  return { ok: true, arkivfilerSlettet: arkiv.deleted || 0 };
 }

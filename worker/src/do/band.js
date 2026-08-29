@@ -1004,7 +1004,25 @@ export class BandDO extends DurableObject {
     const inv = this.db.one('SELECT * FROM invoices WHERE id = ?', String(id));
     if (!inv) return { ok: false, error: 'Faktura ikke fundet' };
     this.db.update('invoices', { status: 'slettet' }, 'id = ?', String(id));
-    return { ok: true, driveFileId: inv.driveFileId || '' };
+    return { ok: true, driveFileId: inv.driveFileId || '', archiveKey: inv.archiveKey || '' };
+  }
+
+  /**
+   * Peger fakturaen på sit objekt i R2-arkivet.
+   *
+   * KUN nøglen gemmes. Download-URL'en er `/api/faktura-arkiv?invoiceId=<id>`
+   * og kan altid udledes af id'et — gemte man den også, ville en ændring af
+   * ruten efterlade gamle rækker med et link der peger på ingenting.
+   *
+   * drive_url røres ikke: et band der stadig kører på Apps Script har en rigtig
+   * Drive-URL stående der, og frontenden vælger arkivlinket når archiveKey er
+   * sat og ellers Drive-linket.
+   */
+  async setInvoiceArchive(id, archiveKey) {
+    await this.#ready();
+    const changed = this.db.update('invoices',
+      { archiveKey: archiveKey || '' }, 'id = ?', String(id));
+    return { ok: changed > 0 };
   }
 
   async setInvoiceDriveFile(id, driveFileId, driveUrl) {

@@ -122,6 +122,7 @@ export default {
       if (url.pathname === '/api/change-password') return withSecHeaders(await apiChangePassword(request, env));
       if (url.pathname === '/api/call')            return withSecHeaders(await apiCall(request, env));
       if (url.pathname === '/api/faktura-pdf')     return withSecHeaders(await apiFakturaPdf(request, env, url));
+      if (url.pathname === '/api/faktura-arkiv')   return withSecHeaders(await apiFakturaArkiv(request, env, url));
       if (url.pathname === '/api/sign')            return withSecHeaders(await apiSign(request, env));
       // Offentlig signeringsside (Booking Fase A) — ingen login. Eksplicit rute i
       // stedet for at stole på extension-less asset-serving, så /sign altid rammer
@@ -462,6 +463,80 @@ async function apiFakturaPdf(request, env, url) {
     headers: {
       'Content-Type': 'application/pdf',
       'Content-Disposition': `inline; filename="${(d.fileName || 'honorarafregning.pdf').replace(/[^\w. \-æøåÆØÅ]/g, '')}"`,
+      'Cache-Control': 'no-store', // CPR-holdig fil må ikke caches
+      'Set-Cookie': sessionCookie(sess.sid)
+    }
+  });
+}
+
+/**
+ * Henter en arkiveret faktura fra R2.
+ *
+ * Samme adgangsmodel som /api/faktura-pdf, og af samme grund: den arkiverede
+ * PDF INDEHOLDER CPR. Derfor gælder tre ting her:
+ *
+ *   • Der kræves en gyldig session med admin-rolle. Nøglen i R2 er ikke
+ *     hemmelig nok til at være adgangskontrol i sig selv.
+ *   • Fakturaen slås op i BANDETS eget Durable Object, hentet ud fra sessionens
+ *     bandId — ikke ud fra noget kalderen sender. Et invoiceId fra et andet band
+ *     findes derfor simpelthen ikke, og der er intet at gætte sig til.
+ *   • Svaret sendes med Cache-Control: no-store.
+ *
+ * Ruten findes kun for bands på Durable Objects. Kører bandet stadig på Apps
+ * Script, ligger arkivet i Drive, og frontenden linker direkte dertil.
+ */
+async function apiFakturaArkiv(request, env, url) {
+  const sess = await loadSession(request, env);
+  if (!sess || sess.data.kind !== 'member') {
+    return htmlError('Ikke logget ind', 'Din session er udløbet — log ind igen i app-fanen.', 401);
+  }
+  const invoiceId = url.searchParams.get('invoiceId') || '';
+  if (!invoiceId) return htmlError('Fejl', 'invoiceId mangler i adressen.', 400);
+
+  if (!usesDurableObjects(env, sess.data.bandId)) {
+    return htmlError('Ikke tilgængelig',
+      'Dette band arkiverer stadig i Google Drive. Brug Drive-linket i fakturalisten.', 404);
+  }
+
+  const { archiveConfigured, getInvoicePdf } = await import('./services/archive.js');
+  if (!archiveConfigured(env)) {
+    return htmlError('Arkivet er ikke sat op',
+      'R2-bindingen ARCHIVE mangler. Kontakt din administrator.', 503);
+  }
+
+  let inv;
+  try {
+    const { verifyMember, requireAdmin } = await import('./auth/verify.js');
+    const band = bandStub(env, sess.data.bandId);
+    const m = await verifyMember(env, band, sess.data.email, sess.data.passwordHash);
+    requireAdmin(m);
+    inv = await band.getInvoice(invoiceId);
+  } catch (e) {
+    if (e && e.userFacing) return htmlError('Ingen adgang', escapeHtmlW(e.message), 403);
+    console.error('faktura-arkiv: ' + (e && e.stack || e));
+    return htmlError('Serverfejl', 'Fakturaen kunne ikke hentes. Fejlen er logget.', 500);
+  }
+
+  // Samme svar uanset om fakturaen ikke findes, er slettet, eller aldrig blev
+  // arkiveret. Ellers kunne man aflæse hvilke id'er der eksisterer.
+  if (!inv || !inv.archiveKey || inv.status === 'slettet') {
+    return htmlError('Ikke fundet', 'Der er ingen arkiveret PDF for denne faktura.', 404);
+  }
+
+  const obj = await getInvoicePdf(env, inv.archiveKey);
+  if (!obj) {
+    console.error('faktura-arkiv: nøgle mangler i R2: ' + inv.archiveKey);
+    return htmlError('Ikke fundet', 'Den arkiverede fil kunne ikke findes. Dan fakturaen igen.', 404);
+  }
+
+  await saveSession(env, sess.sid, sess.data); // rullende fornyelse
+
+  return new Response(obj.body, {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': (obj.httpMetadata && obj.httpMetadata.contentDisposition) ||
+        'inline; filename="faktura.pdf"',
       'Cache-Control': 'no-store', // CPR-holdig fil må ikke caches
       'Set-Cookie': sessionCookie(sess.sid)
     }

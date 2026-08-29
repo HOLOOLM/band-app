@@ -149,8 +149,91 @@ export async function pdfChecks(ydreEnv, ok) {
      udenCpr && /CPR ikke konfigureret/.test(udenCpr.message),
      udenCpr ? udenCpr.message : '-');
 
-  const arkiv = await kald('archiveInvoiceToDrive', { contractId: 'PDF-1' });
-  ok('archiveInvoiceToDrive: fejler pænt uden sidecar', arkiv.ok === false, arkiv.error);
+  const udenArkiv = await kald('archiveInvoiceToDrive', { contractId: 'PDF-1' });
+  ok('archiveInvoiceToDrive: fejler pænt uden R2-binding', udenArkiv.ok === false,
+     udenArkiv.error);
+
+  // ── Arkivet: den CPR-FRIE kopi ─────────────────────────────────────────
+  // Dette er filens vigtigste test efter CPR-reglen selv.
+  //
+  // Baggrund: den oprindelige Code.gs renderede arkivkopien med cpr = null
+  // (Code.gs:2660). Ved porteringen til Workeren kaldte arkivstien i stedet
+  // renderInvoicePdf, som HENTER CPR — så hver arkivering ville lægge en
+  // CPR-holdig PDF i et arkiv brugeren får at vide er "uden CPR". Intet
+  // eksisterende tjek fangede det, fordi testene kun så på det svar action'en
+  // returnerede, og CPR'et lå inde i PDF-bytes.
+  //
+  // Testen aflytter derfor den HTML der faktisk sendes til konvertering.
+  // CPR skal være genskabt først — ellers ville "ingen CPR i arkivet" være
+  // sandt af den uinteressante grund at bandet slet ikke har et.
+  await kald('adminSaveBillingInfo', {
+    cpr: CPR, bankName: 'Sparekassen for Nr. Nebel og Omegn',
+    bankReg: '9682', bankKto: '1465171',
+    payeeName: 'Peter Hansen', payeeAddress: 'Vejnavn 1\n1234 By'
+  });
+
+  const bucket = fakeBucket();
+  const sendtHtml = [];
+  const rigtigFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const krop = JSON.parse(init.body);
+    if (krop.op === 'renderPdf') sendtHtml.push(krop.html);
+    // btoa af en kort streng — indholdet er ligegyldigt, kun at der kommer
+    // gyldig base64 tilbage så resten af stien kan køre igennem.
+    return new Response(JSON.stringify({ ok: true, pdfBase64: btoa('%PDF-1.4 test') }),
+      { headers: { 'Content-Type': 'application/json' } });
+  };
+
+  let arkiv, arkiv2;
+  try {
+    const envA = Object.assign({}, env, {
+      ARCHIVE: bucket,
+      SIDECAR_URL: 'https://sidecar.test/exec',
+      SIDECAR_TOKEN: 'test-token'
+    });
+    const kaldA = (a, pp) => runAction(envA, a, Object.assign({ bandId: BAND }, pp), creds);
+    arkiv = await kaldA('archiveInvoiceToDrive', { contractId: 'PDF-1' });
+    arkiv2 = await kaldA('archiveInvoiceToDrive', { contractId: 'PDF-1' });
+  } finally {
+    globalThis.fetch = rigtigFetch;
+  }
+
+  ok('arkiv: arkivering lykkes', arkiv.ok === true, arkiv.error || arkiv.archiveKey);
+
+  const arkivHtml = sendtHtml.join('\n');
+  ok('arkiv: den arkiverede kopi indeholder IKKE CPR',
+     sendtHtml.length > 0 && !arkivHtml.includes(CPR) && !arkivHtml.includes('010190'),
+     sendtHtml.length ? 'HTML aflyttet, intet CPR' : 'INGEN HTML AFLYTTET — testen beviser intet');
+  ok('arkiv: kopien er stadig en rigtig faktura',
+     arkivHtml.includes('Danser med Drenge Tribute') && arkivHtml.includes('35.000'),
+     'bandnavn og beløb med');
+
+  ok('arkiv: nøglen ligger under bandets eget præfiks',
+     String(arkiv.archiveKey || '').startsWith(BAND + '/fakturaer/2026/'),
+     arkiv.archiveKey);
+  ok('arkiv: download-URL peger på den login-gatede rute',
+     String(arkiv.archiveUrl || '').startsWith('/api/faktura-arkiv?invoiceId='),
+     arkiv.archiveUrl);
+
+  // Drive-versionen lagde en NY fil ved hver genarkivering og skulle slette den
+  // gamle manuelt via replaceFileId. Nøglen her er stabil, så en genarkivering
+  // overskriver i stedet for at ophobe kopier.
+  ok('arkiv: genarkivering overskriver frem for at ophobe kopier',
+     arkiv2.ok === true && arkiv2.archiveKey === arkiv.archiveKey &&
+     bucket._antal() === 1,
+     bucket._antal() + ' objekt(er) i arkivet');
+
+  const arkiveret = (await band.listInvoices()).find(i => i.contractId === 'PDF-1');
+  ok('arkiv: nøglen gemmes på fakturarækken',
+     arkiveret && arkiveret.archiveKey === arkiv.archiveKey,
+     arkiveret ? String(arkiveret.archiveKey) : 'faktura ikke fundet');
+
+  // Sletning må ikke efterlade persondata liggende.
+  const { deleteBandArchive } = await import('../services/archive.js');
+  const tømt = await deleteBandArchive(Object.assign({}, env, { ARCHIVE: bucket }), BAND);
+  ok('arkiv: sletning af band tømmer hele præfikset',
+     tømt.deleted >= 1 && bucket._antal() === 0,
+     tømt.deleted + ' fil(er) slettet, ' + bucket._antal() + ' tilbage');
 
   // ── Fase 6: oprydning ──────────────────────────────────────────────────
   await band.putSession('ryd-udloebet', { kind: 'member', subject: 'f-a', token: 't' }, -100);
@@ -182,4 +265,29 @@ async function opToken(env, master, iter) {
   const r = await runAction(env, 'operatorLogin',
     { email: 'op-f@test.dk', passwordHash: await sha256hex(kode) });
   return r.token;
+}
+
+/**
+ * R2-bucket i hukommelsen. Kun de fire kald services/archive.js bruger.
+ *
+ * En rigtig bucket kan ikke bruges i selvtesten: den ville skrive data ved hver
+ * kørsel, og testen skal kunne køres igen og igen uden at efterlade noget.
+ */
+function fakeBucket() {
+  const m = new Map();
+  return {
+    async put(key, bytes, opts) { m.set(String(key), { bytes, opts }); },
+    async get(key) {
+      const v = m.get(String(key));
+      return v ? { body: v.bytes, httpMetadata: (v.opts || {}).httpMetadata || {} } : null;
+    },
+    async delete(key) {
+      for (const k of (Array.isArray(key) ? key : [key])) m.delete(String(k));
+    },
+    async list({ prefix = '', limit = 1000 } = {}) {
+      const alle = [...m.keys()].filter(k => k.startsWith(prefix)).sort();
+      return { objects: alle.slice(0, limit).map(key => ({ key })), truncated: false };
+    },
+    _antal() { return m.size; }
+  };
 }

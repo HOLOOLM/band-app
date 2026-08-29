@@ -75,3 +75,18 @@ SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzc3u_E4EIZLZXiDoJfSAZyHS0
 # Til afprøvning kan "onboarding@resend.dev" bruges uden verificeret domæne,
 # men den kan KUN sende til den mailadresse Resend-kontoen er oprettet med.
 # MAIL_FROM = "band-app@dit-domaene.dk"
+
+# ── FAKTURAARKIV (R2) ──────────────────────────────────────────────────────
+# Arkiverede honorarafregninger. Lå før i operatørens personlige Google Drive —
+# se services/archive.js for hvorfor det var forkert.
+#
+# Bucket'en SKAL oprettes med location hint EU. Ligesom jurisdiction("eu") på
+# Durable Objects er placeringen en del af bucket'ens identitet og kan IKKE
+# ændres bagefter — kun ved at oprette en ny og kopiere alt over.
+#
+# Bucket'en må ALDRIG gøres offentlig og må ikke have et r2.dev-domæne. Selvom
+# arkivkopien er CPR-fri, er en honorarafregning stadig persondata, og adgangen
+# skal gå gennem /api/faktura-arkiv, som kræver login med admin-rolle.
+[[r2_buckets]]
+binding = "ARCHIVE"
+bucket_name = "band-app-arkiv"

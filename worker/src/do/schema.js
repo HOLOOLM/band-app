@@ -201,7 +201,22 @@ CREATE INDEX IF NOT EXISTS idx_invoices_status ON invoices(status);
 
 // Tilføj nye trin ved at appende — ret ALDRIG et udgivet trin, da gamle objekter
 // kan have kørt den gamle udgave. Ny kolonne = nyt trin med ALTER TABLE.
-export const BAND_MIGRATIONS = [BAND_V1, BAND_V2];
+// V3 — fakturaarkivet flyttes fra Google Drive til Cloudflare R2.
+//
+// Hvorfor: sidecaren arkiverede med DriveApp.getRootFolder() og kørte "som mig",
+// så HVERT bands fakturaer landede i operatørens personlige Drive og blev sat
+// til Access.PRIVATE. To følger: "↗ Drive"-linket i admin-panelet var dødt for
+// alle andre end den ene Google-konto, og alle bands delte operatørens 15 GB
+// Google-kvote — den samme kvote som vedkommendes Gmail.
+//
+// drive_file_id og drive_url beholdes. Bands der stadig kører på Apps Script
+// (BACKEND = "sheets") har rigtige Drive-filer i de kolonner, og en faktura
+// arkiveret før omskiftningen skal stadig kunne åbnes.
+const BAND_V3 = `
+ALTER TABLE invoices ADD COLUMN archive_key TEXT;
+`;
+
+export const BAND_MIGRATIONS = [BAND_V1, BAND_V2, BAND_V3];
 export const MASTER_MIGRATIONS = [MASTER_V1];
 
 export const BAND_SCHEMA_VERSION = BAND_MIGRATIONS.length;

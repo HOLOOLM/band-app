@@ -50,7 +50,7 @@ import {
   operatorListBookers, operatorSaveBooker, operatorDeleteBooker,
   operatorResetBookerPassword
 } from './booker.js';
-import { archiveInvoiceToDrive } from './pdf.js';
+import { archiveInvoice } from './pdf.js';
 
 // scope: hvilket lager action'en får udleveret
 //   'band'      → ctx.band er bandets DO-stub (kræver gyldigt bandId)
@@ -189,7 +189,9 @@ export const ACTIONS = {
   // renderInvoicePdf er IKKE en action: den kaldes af /api/faktura-pdf-ruten,
   // som streamer bytes. Var den en action, ville PDF'en (med CPR) skulle
   // gennem et JSON-svar.
-  archiveInvoiceToDrive: { scope: 'band', auth: 'admin', fn: archiveInvoiceToDrive }
+  // Navnet er frontendens (08-admin.js) og må ikke ændres. Arkivet ligger i
+  // R2, ikke i Drive — se services/archive.js.
+  archiveInvoiceToDrive: { scope: 'band', auth: 'admin', fn: archiveInvoice }
 };
 
 export const VALID_SCOPES = ['band', 'master', 'identity', 'none'];

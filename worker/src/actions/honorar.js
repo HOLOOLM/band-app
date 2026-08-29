@@ -129,10 +129,12 @@ export async function updateInvoiceStatus(ctx) {
  * deleteInvoice. SOFT delete — rækken bliver liggende, så nummeret forbliver
  * reserveret.
  *
- * Drive-filen flyttes til papirkurven via sidecaren. Lykkes det ikke, er
- * fakturaen stadig slettet, og brugeren får en advarsel om at rydde op manuelt —
- * samme adfærd som Code.gs:2489. At fejle hele handlingen ville efterlade
- * fakturaen aktiv, hvilket er værre.
+ * Selve PDF-filen slettes derimod HÅRDT. Den indeholder CPR, og en faktura
+ * brugeren har slettet må ikke blive liggende læsbar i arkivet.
+ *
+ * Lykkes oprydningen ikke, er fakturaen stadig slettet, og brugeren får en
+ * advarsel om at rydde op manuelt — samme afvejning som Code.gs:2489. At fejle
+ * hele handlingen ville efterlade fakturaen aktiv, hvilket er værre.
  */
 export async function deleteInvoice(ctx) {
   const { env, band, p } = ctx;
@@ -140,6 +142,21 @@ export async function deleteInvoice(ctx) {
   const r = await band.softDeleteInvoice(p.id);
   if (!r.ok) return { ok: false, error: r.error || 'Faktura ikke fundet' };
 
+  if (r.archiveKey) {
+    try {
+      const { deleteInvoicePdf } = await import('../services/archive.js');
+      await deleteInvoicePdf(env, r.archiveKey);
+    } catch (e) {
+      console.error('deleteInvoice: kunne ikke slette arkivobjekt ' + r.archiveKey +
+                    ': ' + (e && e.message || e));
+      return {
+        ok: true,
+        warning: 'Fakturaen er slettet, men den arkiverede PDF kunne ikke fjernes. Fejlen er logget.'
+      };
+    }
+  }
+
+  // Bands arkiveret FØR flytningen til R2 har stadig en rigtig Drive-fil.
   if (r.driveFileId) {
     try {
       const { callSidecar } = await import('../services/sidecar.js');

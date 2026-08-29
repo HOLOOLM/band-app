@@ -199,7 +199,7 @@ async function renderAdminSettings(){
 
       <div class="card" style="padding:24px;border:1px solid rgba(192,57,43,.2)">
         <div class="eyebrow" style="margin-bottom:8px;color:var(--danger)">Farezone</div>
-        <p class="muted" style="font-size:13px;margin-bottom:16px">Sletter permanent alle data for dette band: sheet, Drive-mapper og faktureringsoplysninger. Handlingen kan ikke fortrydes.</p>
+        <p class="muted" style="font-size:13px;margin-bottom:16px">Sletter permanent alle data for dette band: database, fakturaarkiv og faktureringsoplysninger. Handlingen kan ikke fortrydes.</p>
         <button class="btn btn-danger" onclick="confirmDeleteBand()">Slet dette band permanent</button>
       </div>
 
@@ -339,7 +339,7 @@ async function confirmDeleteBand(){
   } catch(e){ toast(e.message, 'err'); }
 }
 
-// ─── Invoice archive (Google Drive) ─────────────────────────────
+// ─── Fakturaarkiv (R2, tidligere Google Drive) ──────────────────
 
 async function renderInvoicesList(){
   const main = document.getElementById('adminMain');
@@ -347,7 +347,7 @@ async function renderInvoicesList(){
     <div class="page-head">
       <div>
         <h1 class="serif">Honorarafregninger</h1>
-        <div class="lede">Arkiv på Google Drive · markér betalt når penge er på kontoen.</div>
+        <div class="lede">Arkiverede kopier uden CPR · markér betalt når penge er på kontoen.</div>
       </div>
     </div>
     <div id="invoicesWrap" class="card" style="padding:0">
@@ -411,6 +411,21 @@ function drawInvoicesTable(invoices){
                  <div class="mono" style="font-size:10px;color:var(--cream-mute);letter-spacing:.06em">#${escapeHtml(i.contractId)} ↗</div>
                </button>`
             : '<span class="muted">—</span>';
+
+          // Arkivlinket har to former, fordi de to datalag gemmer forskellige
+          // steder. Et band på Durable Objects har archiveKey og hentes gennem
+          // appen; et band der stadig kører på Apps Script har en Drive-URL.
+          // Rækkefølgen er vigtig: archiveKey vinder, så et band der ER flyttet
+          // ikke bliver ved med at pege på en forældet Drive-fil.
+          const arkivUrl = i.archiveKey
+            ? '/api/faktura-arkiv?invoiceId=' + encodeURIComponent(i.id)
+            : (i.driveUrl || '');
+          const arkivNavn = i.archiveKey ? 'Arkiv' : 'Drive';
+          const arkivKnapper = arkivUrl
+            ? `<a href="${escapeHtml(arkivUrl)}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm" style="text-decoration:none">↗ ${arkivNavn}</a>
+               <button class="btn btn-ghost btn-sm" data-upload-invoice title="Genopret arkivkopien uden CPR">↻ Genopret</button>`
+            : `<button class="btn btn-primary btn-sm" data-upload-invoice title="Gem en kopi uden CPR i arkivet">☁ Arkivér</button>`;
+
           return `<tr data-invoice-id="${escapeHtml(i.id)}" data-invoice-nr="${escapeHtml(i.invoiceNr)}" data-contract-id="${escapeHtml(i.contractId||'')}">
             <td class="mono" style="color:var(--accent)">${escapeHtml(i.invoiceNr)}</td>
             <td>${contractLink}</td>
@@ -419,10 +434,7 @@ function drawInvoicesTable(invoices){
             <td style="text-align:right" class="mono">${fmtMoney(i.amount)}</td>
             <td>${statusBadge}</td>
             <td style="text-align:right;white-space:nowrap">
-              ${i.driveUrl
-                ? `<a href="${escapeHtml(i.driveUrl)}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm" style="text-decoration:none">↗ Drive</a>
-                   <button class="btn btn-ghost btn-sm" data-upload-invoice title="Genopret Drive-arkiv uden CPR">↻ Genopret Drive</button>`
-                : `<button class="btn btn-primary btn-sm" data-upload-invoice title="Arkiver til Drive uden CPR">☁ Arkivér til Drive</button>`}
+              ${arkivKnapper}
               ${toggle}
               <button class="btn btn-danger btn-sm" data-delete-invoice title="Slet honorarafregning">🗑</button>
             </td>
@@ -447,29 +459,31 @@ function drawInvoicesTable(invoices){
 }
 
 /**
- * Arkivér honorarafregning på Drive — uden CPR.
+ * Arkivér honorarafregning — uden CPR.
+ *
  * HTML'en renderes server-side (Fase 2): klienten sender kun invoiceId, og
- * backend bygger selv den CPR-løse version og erstatter Drive-filen.
+ * backend bygger selv den CPR-løse version. Klienten kan IKKE sende en færdig
+ * PDF; ellers ville løftet om "uden CPR" kun gælde den ene sti vi selv bygger.
  */
 async function uploadInvoicePdf(invoiceId, invoiceNr){
-  toast(`Arkiverer ${invoiceNr} til Drive…`);
+  toast(`Arkiverer ${invoiceNr}…`);
   try {
     const r = await apiPost('archiveInvoiceToDrive', { invoiceId: invoiceId });
-    if (!r.ok) throw new Error(r.error||'Drive-fejl');
+    if (!r.ok) throw new Error(r.error||'Arkiveringsfejl');
     cacheBust('invoices'); broadcastInvalidate(['invoices']);
-    toast(`${invoiceNr} arkiveret på Drive (uden CPR)`);
+    toast(`${invoiceNr} arkiveret (uden CPR)`);
     if (r.warning) toast(r.warning, 'err');
     renderInvoicesList();
   } catch(e){ toast('Fejl: '+(e.message||e), 'err'); }
 }
 
 async function deleteInvoice(id, nr){
-  if (!confirm(`Slet honorarafregning ${nr}?\n\nDrive-filen flyttes til papirkurv og nummeret frigives — næste nye honorarafregning genbruger det første ledige nummer.`)) return;
+  if (!confirm(`Slet honorarafregning ${nr}?\n\nDen arkiverede PDF slettes og nummeret frigives — næste nye honorarafregning genbruger det første ledige nummer.`)) return;
   try {
     const d = await apiPost('deleteInvoice', { id: id });
     if (!d.ok){ toast(d.error||'Fejl','err'); return; }
     if (d.warning) toast(d.warning, 'err');
-    else toast('Honorarafregning slettet · Drive-fil flyttet til papirkurv');
+    else toast('Honorarafregning slettet · arkivkopien fjernet');
     cacheBust('invoices'); broadcastInvalidate(['invoices']);
     renderInvoicesList();
   } catch(e){ toast(e.message,'err'); }

@@ -13,11 +13,13 @@ autoritativ på *hvor vi er*.
 | | |
 |---|---|
 | Alle faser (1–6) | **Kodet, testet og deployet** |
-| Selvtest | **440 tjek, alle grønne**, verificeret idempotent over gentagne kørsler |
+| Selvtest | **448 tjek, alle grønne**, verificeret idempotent over gentagne kørsler |
 | Kontraktrevision | **Ren** — `node worker/tools/audit-actions.mjs` |
 | Ny Worker-kode | ~10.400 linjer i 45 moduler, 76 actions |
-| `Code.gs` → sidecar | 4.762 → 288 linjer (`apps-script/Sidecar.gs`) |
+| `Code.gs` → sidecar | 4.762 → 219 linjer (`apps-script/Sidecar.gs`) |
+| Fakturaarkiv | **Flyttet fra Google Drive til R2** — kræver at bucket'en oprettes, se skridt 3 |
 | **I DRIFT** | **Nej.** `BACKEND = "sheets"` — alt kører fortsat på Apps Script |
+| **IKKE PUSHET** | R2-ændringen ligger som lokal commit. Push først når bucket'en findes — ellers fejler auto-deployet |
 
 Det nye datalag er altså bygget færdigt og ligger i produktion, men ingen bruger
 det. Frontenden er uændret bortset fra tre filer (se "Ændret i frontenden").
@@ -54,7 +56,30 @@ Jeg har til gengæld verificeret:
 - `/api/call` går til Apps Script (bevist: Apps Script svarede med sin egen fejl)
 - diagnostik-endpointene er lukkede uden og med forkert token
 
-### 3. Prøv det nye lag lokalt  ← alt herfra er valgfrit (kræver intet fra dig)
+### 3. Opret R2-bucket'en — SKAL gøres før næste push  ← START HER
+
+Fakturaarkivet er flyttet fra Google Drive til Cloudflare R2. `wrangler.toml`
+har nu en `[[r2_buckets]]`-binding, og **et deploy fejler indtil bucket'en
+findes**. Derfor ligger ændringen som en lokal commit og er ikke pushet.
+
+1. [dash.cloudflare.com](https://dash.cloudflare.com) → **R2** → **Create bucket**
+2. Navn: **`band-app-arkiv`** (præcis dette — det står i `wrangler.toml`)
+3. Location: vælg **EU**
+
+**Punkt 3 kan ikke fortrydes.** Placeringen er en del af bucket'ens identitet,
+ligesom `jurisdiction('eu')` på Durable Objects. Vælger du forkert, kræver det
+en ny bucket og en kopiering af alt indhold. Appen gemmer persondata.
+
+Cloudflare kræver et betalingskort på kontoen før R2 kan slås til, også på
+gratisniveauet (10 GB, 1 mio. skrivninger og 10 mio. læsninger pr. måned). Du
+bliver ikke opkrævet noget under de grænser.
+
+**Gør ALDRIG bucket'en offentlig og tilknyt ikke et r2.dev-domæne.** Adgangen
+skal gå gennem `/api/faktura-arkiv`, som kræver login med admin-rolle.
+
+Sig til når den er oprettet, så pusher jeg.
+
+### 4. Prøv det nye lag lokalt  ← alt herfra er valgfrit (kræver intet fra dig)
 
 ```
 preview_start med "band-app-do"     → port 8789, BACKEND=do
@@ -68,9 +93,11 @@ versionsstyret fil — de må aldrig bruges i produktion.**
 Jeg har allerede klikket igennem lokalt: login, tvunget kodeskift, dashboard,
 kontrakter, medlemmer, honorar. Alt renderede korrekt med rigtige tal.
 
-### 4. Sæt sidecaren op — så virker PDF, Drive, afstand og mail  ← ANBEFALET NÆSTE
+### 5. Sæt sidecaren op — så virker PDF, afstand og mail
 
-Uden denne virker fire ting ikke. **Alt andet virker.**
+Uden denne virker tre ting ikke: PDF-dannelse, køreafstand og udgående mail.
+**Alt andet virker.** Sidecaren arkiverer ikke længere — det gør R2 nu — så den
+er skrumpet til 219 linjer og fire operationer.
 
 1. Indsæt `apps-script/Sidecar.gs` i et Apps Script-projekt (opsætningen står i
    filens hoved)
@@ -91,7 +118,7 @@ Derefter i `worker/wrangler.toml`: `SIDECAR_URL = "<Apps Script /exec>"` og
 Resend kræver desuden at domænet verificeres med SPF/DKIM/DMARC, ellers ryger
 mailen i spam.
 
-### 5. Omskiftningen, når du vil have det i drift
+### 6. Omskiftningen, når du vil have det i drift
 
 ```
 node node_modules\wrangler\bin\wrangler.js secret put BOOTSTRAP_TOKEN
@@ -154,6 +181,34 @@ parameternavne. Alle rettet 27/8; revisionen er ren.
 **Test-dækning beviser ikke kontrakt-overholdelse.** Det er den vigtigste lektion
 fra dagen, og grunden til at dette værktøj skal køres frem for at man stoler på
 grønne tjek.
+
+## To fejl fundet ved at flytte arkivet (28/8)
+
+Begge var usynlige for både selvtesten og en gennemklikning, fordi de sad i
+noget der *så* ud til at virke.
+
+**1. Arkivet lå i én persons private Drive.** `_archivePdf` i sidecaren skrev til
+`DriveApp.getRootFolder()` og kørte "som mig", så hvert bands fakturaer landede i
+den deployende Google-kontos eget drev og blev sat til `Access.PRIVATE`. Følgen:
+"↗ Drive"-knappen i admin-panelet var **død for alle andre end den ene konto**,
+og alle bands delte den persons 15 GB Google-kvote — den samme kvote som
+vedkommendes Gmail. Arkivet ligger nu i R2 og hentes gennem
+`/api/faktura-arkiv`, som kræver login med admin-rolle.
+
+**2. Arkivkopien ville have indeholdt CPR.** Det her er en regression jeg selv
+indførte i porteringen. Den oprindelige `Code.gs:2660` renderer arkivkopien med
+`cpr = null`; min Worker-udgave kaldte i stedet `renderInvoicePdf`, som *henter*
+CPR. Knappen lover brugeren "uden CPR", så hver arkivering ville have lagt et
+CPR-nummer i et arkiv man har fået at vide er harmløst.
+
+Grunden til at intet fangede det: testene så på det svar action'en returnerede,
+og CPR'et lå inde i PDF-bytes. Selvtesten aflytter nu den HTML der faktisk
+sendes til konvertering, og tjekker at CPR **ikke** er i den — mens bandet
+har et CPR, så beviset ikke er sandt af den uinteressante grund at der ingen er.
+Otte nye tjek dækker arkivet (`arkiv:` i `/api/_selftest`).
+
+Lektien er den samme som ved kontraktdriften: **et grønt tjek beviser kun det
+det faktisk kigger på.** Begge fejl sad i det led ingen test kiggede på.
 
 ## Fem arkitekturvalg der er lette at bryde
 
