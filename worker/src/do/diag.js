@@ -86,6 +86,34 @@ export function iterFraUrl(url) {
   return Math.min(n, UAUTORISERET_ITER_LOFT);
 }
 
+
+/**
+ * Skrive-læse-slet-rundtur mod R2-arkivet.
+ *
+ * Kun tilstedeværelsen af bindingen (`!!env.ARCHIVE`) beviser ingenting: den
+ * kan pege på en bucket i den forkerte jurisdiktion, og det ville først vise
+ * sig når nogen arkiverede en rigtig faktura. Derfor skrives et lille objekt,
+ * læses tilbage og slettes igen.
+ *
+ * Nøglen ligger under __diag__/, altså uden for ethvert bands præfiks, så en
+ * oprydning af et band aldrig rører den.
+ */
+async function arkivRundtur(env) {
+  if (!env.ARCHIVE) return 'binding ARCHIVE mangler';
+  const key = '__diag__/rundtur.txt';
+  const tekst = 'diag';
+  try {
+    await env.ARCHIVE.put(key, new TextEncoder().encode(tekst));
+    const hentet = await env.ARCHIVE.get(key);
+    const laest = hentet ? await hentet.text() : null;
+    await env.ARCHIVE.delete(key);
+    if (laest !== tekst) return 'skrev, men læste "' + laest + '"';
+    return true;
+  } catch (e) {
+    return 'fejl: ' + String(e && e.message || e);
+  }
+}
+
 export async function diagBillig(env) {
   let lagerOk = false;
   let skemaVersion = null;
@@ -112,6 +140,9 @@ export async function diagBillig(env) {
     euJurisdiktion: jurisdictionActive(env),
     doLagerVirker: lagerOk,
     doSkemaVersion: skemaVersion,
+    // true = R2-bucket'en kunne skrives, læses og ryddes igen. Alt andet end
+    // true betyder at fakturaarkivering vil fejle.
+    arkivVirker: await arkivRundtur(env),
     pwIterations: pwIterations(env),
     // Hvilket datalag der er i brug. Det vigtigste enkelttal ved en omskiftning:
     // står der "Apps Script", er det nye lag bygget men ikke i drift.
@@ -170,6 +201,9 @@ export async function diag(env) {
       SIDECAR_TOKEN: !!env.SIDECAR_TOKEN,   // først nødvendig i Fase 4
       RESEND_API_KEY: !!env.RESEND_API_KEY  // først nødvendig i Fase 5
     },
+    // Bindingen findes — men om bucket'en svarer, siger dette ikke noget om.
+    // Den fulde diag kører en rigtig rundtur.
+    arkivBinding: !!env.ARCHIVE,
     // CPR_KEY skal være præcis 32 bytes base64 — en forkert længde ville først
     // vise sig når nogen gemte et CPR, altså på det værst mulige tidspunkt.
     cprKeyGyldig: cprKeyGyldig(env),

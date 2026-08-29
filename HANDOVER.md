@@ -17,9 +17,9 @@ autoritativ på *hvor vi er*.
 | Kontraktrevision | **Ren** — `node worker/tools/audit-actions.mjs` |
 | Ny Worker-kode | ~10.400 linjer i 45 moduler, 76 actions |
 | `Code.gs` → sidecar | 4.762 → 219 linjer (`apps-script/Sidecar.gs`) |
-| Fakturaarkiv | **Flyttet fra Google Drive til R2** — kræver at bucket'en oprettes, se skridt 3 |
+| Fakturaarkiv | **Flyttet fra Google Drive til R2** (`band-app-arkiv`, EU-jurisdiktion) |
 | **I DRIFT** | **Nej.** `BACKEND = "sheets"` — alt kører fortsat på Apps Script |
-| **IKKE PUSHET** | R2-ændringen ligger som lokal commit. Push først når bucket'en findes — ellers fejler auto-deployet |
+| Fakturaarkiv i drift | **Ja** — bucket `band-app-arkiv` oprettet i EU-jurisdiktion 28/8, deployet landede |
 
 Det nye datalag er altså bygget færdigt og ligger i produktion, men ingen bruger
 det. Frontenden er uændret bortset fra tre filer (se "Ændret i frontenden").
@@ -56,35 +56,23 @@ Jeg har til gengæld verificeret:
 - `/api/call` går til Apps Script (bevist: Apps Script svarede med sin egen fejl)
 - diagnostik-endpointene er lukkede uden og med forkert token
 
-### 3. Opret R2-bucket'en — SKAL gøres før næste push  ← START HER
+### 3. ~~Opret R2-bucket'en~~ ✅ GJORT 28/8
 
-Fakturaarkivet er flyttet fra Google Drive til Cloudflare R2. `wrangler.toml`
-har nu en `[[r2_buckets]]`-binding, og **et deploy fejler indtil bucket'en
-findes**. Derfor ligger ændringen som en lokal commit og er ikke pushet.
+Bucket `band-app-arkiv` er oprettet med **Specify jurisdiction → European Union
+(EU)** og storage class Standard. Bindingen i `wrangler.toml` har
+`jurisdiction = "eu"` til at matche.
 
-1. [dash.cloudflare.com](https://dash.cloudflare.com) → **Storage & databases**
-   → **R2** → gennemfør abonnementsflowet (kræver et betalingskort, se nedenfor)
-2. **Create bucket**, navn: **`band-app-arkiv`** (præcis dette — det står i
-   `wrangler.toml`)
-3. Fold **Specify jurisdiction** ud og vælg **European Union (EU)**
+At deployet overhovedet lykkedes ER verifikationen: Cloudflare afviser en
+udrulning hvis en R2-binding peger på en bucket der ikke findes, eller hvis
+jurisdiktionen ikke stemmer. `/api/faktura-arkiv` svarer nu 401 mod 404 før
+deployet, hvilket bekræfter at den nye kode er live.
 
-**Vælg jurisdiktion, ikke "location hint".** De to ting ligner hinanden i
-menuen, men et location hint er kun et ønske — best effort, ingen garanti — og
-duer derfor ikke som GDPR-argument. En jurisdiktion er en hård garanti om at
-objekterne bliver i EU.
+`/api/_diag` rapporterer desuden `arkivVirker` — en rigtig skrive-læse-slet-
+rundtur mod bucket'en. Kun `true` betyder at arkivering vil virke; at bindingen
+findes beviser intet i sig selv, for den kan pege på den forkerte jurisdiktion.
 
-**Punkt 3 kan ikke fortrydes.** Jurisdiktionen er en del af bucket'ens identitet,
-ligesom `jurisdiction('eu')` på Durable Objects. Vælger du forkert, kræver det
-en ny bucket og en kopiering af alt indhold. Appen gemmer persondata.
-
-Cloudflare kræver et betalingskort på kontoen før R2 kan slås til, også på
-gratisniveauet (10 GB, 1 mio. skrivninger og 10 mio. læsninger pr. måned). Du
-bliver ikke opkrævet noget under de grænser.
-
-**Gør ALDRIG bucket'en offentlig og tilknyt ikke et r2.dev-domæne.** Adgangen
-skal gå gennem `/api/faktura-arkiv`, som kræver login med admin-rolle.
-
-Sig til når den er oprettet, så pusher jeg.
+**Vælg aldrig "Automatic"** hvis bucket'en nogensinde skal genskabes — den ville
+have placeret data i Eastern Europe uden garanti for at de bliver der.
 
 ### 4. Prøv det nye lag lokalt  ← alt herfra er valgfrit (kræver intet fra dig)
 
