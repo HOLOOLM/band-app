@@ -23,7 +23,9 @@
  * 2. Indsæt DENNE fil som eneste .gs-fil. Slet Code.gs og Tests.gs.
  * 3. Kør setSidecarToken_RUN_ME() én gang og indsæt den værdi, du uploadede
  *    som SIDECAR_TOKEN i Cloudflare.
- * 4. Aktivér Advanced Drive Service: Tjenester → Drive API → v2 → Tilføj.
+ * 4. Aktivér Advanced Drive Service: Tjenester → Drive API → Tilføj.
+ *    Versionen er ligegyldig — koden understøtter både v3 (som Google
+ *    vælger i dag) og v2 (som ældre projekter kan have).
  * 5. Deploy → Ny udrulning → Web app:
  *      Kør som: mig
  *      Hvem har adgang: Alle
@@ -145,13 +147,37 @@ function _renderPdf(body) {
  * Konverterer via et midlertidigt Google Doc. Dokumentet flyttes ALTID til
  * papirkurven igen — også hvis konverteringen fejler, ellers ophober vi
  * skjulte filer på Drive.
+ *
+ * ── v3 ELLER v2 ─────────────────────────────────────────────────────────────
+ * Advanced Drive Service findes i to udgaver, og de hedder ikke det samme:
+ *
+ *   v3   Drive.Files.create(resource, blob)   felt: name
+ *   v2   Drive.Files.insert(resource, blob, { convert: true })   felt: title
+ *
+ * Google vælger v3 automatisk når man tilføjer tjenesten i dag, og v2 kan ikke
+ * længere vælges i nye projekter. Begge understøttes her, fordi et ældre projekt
+ * kan have v2 tilknyttet — og fordi den fejl man ellers får ("Drive.Files.insert
+ * is not a function") ikke antyder at det handler om en API-version.
+ *
+ * I v3 findes `convert`-parameteren ikke. Konverteringen udløses i stedet af at
+ * resource'ens mimeType er et Google-format: uploader man HTML og beder om
+ * vnd.google-apps.document, konverteres den undervejs.
  */
 function _viaDriveDocs(html, navn) {
   var temp = null;
   try {
-    var resource = { title: navn + '__tmp', mimeType: 'application/vnd.google-apps.document' };
     var htmlBlob = Utilities.newBlob(html, 'text/html', navn + '.html');
-    temp = Drive.Files.insert(resource, htmlBlob, { convert: true });
+    var docType = 'application/vnd.google-apps.document';
+
+    if (Drive.Files.create) {
+      temp = Drive.Files.create({ name: navn + '__tmp', mimeType: docType }, htmlBlob);
+    } else if (Drive.Files.insert) {
+      temp = Drive.Files.insert({ title: navn + '__tmp', mimeType: docType }, htmlBlob,
+                                { convert: true });
+    } else {
+      throw new Error('Advanced Drive Service er ikke slået til (Tjenester → Drive API).');
+    }
+
     var fil = DriveApp.getFileById(temp.id);
     return fil.getAs('application/pdf').setName(navn + '.pdf');
   } finally {
