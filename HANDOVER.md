@@ -32,16 +32,20 @@ De fem nye HEX-felter kan nu gemmes. Før dette filtrerede den kørende `Code.gs
 ukendte nøgler væk med et bart `return`, så man fik "Udseende gemt" og blanke
 felter efter genindlæsning.
 
-### 2. Verificér at den live app er intakt  ← START HER
+### 2. ~~Verificér at den live app er intakt~~ ✅ GJORT 27/8
 
-Dette er den ENESTE ting der stadig ikke er tjekket, og det kræver **band-id'et**
-— giv det til en ny chat, så kan den indlæse siden, læse konsollen og bekræfte
-det. Åbn appen med `?band=<dit-id>`, log ind, og se om branding, logo og
-dashboard ser rigtigt ud.
+Bandene er **`testband1`** og **`testband2`** — begge testbands, ingen rigtige
+data. Det er derfor omskiftningen er lavrisiko.
 
-Tjek også et af de nye HEX-felter under Indstillinger → Finjustér nuancer: gem en
-værdi, genindlæs, og se om den står der. Det er beviset på at `Code.gs`-deployet
-tog fat.
+Verificeret på `https://band-app.jonasholm.workers.dev/?band=testband2`:
+
+- Login-skærmen renderer, **ingen konsolfejl**
+- `BAND_ID` og `BAND_CONFIG` udfyldes; temaet anvendes (`--ink-deep: #0A0A0A`)
+- **`Code.gs`-deployet tog fat:** alle fem nye HEX-nøgler er nu med i
+  `getConfig`-svaret (tomme, men til stede — altså kan de gemmes)
+- **iCal-reparationen virker:** `/ical` svarer `Content-Type: text/calendar`,
+  mens den gamle URL `?action=ical` svarer `text/html` — netop den fejl der
+  gjorde at et kalenderabonnement hentede `index.html`
 
 Jeg har til gengæld verificeret:
 - de tre ændrede frontend-filer er hentet fra produktion og parser
@@ -50,7 +54,7 @@ Jeg har til gengæld verificeret:
 - `/api/call` går til Apps Script (bevist: Apps Script svarede med sin egen fejl)
 - diagnostik-endpointene er lukkede uden og med forkert token
 
-### 3. Prøv det nye lag lokalt (kræver intet fra dig)
+### 3. Prøv det nye lag lokalt  ← alt herfra er valgfrit (kræver intet fra dig)
 
 ```
 preview_start med "band-app-do"     → port 8789, BACKEND=do
@@ -64,7 +68,7 @@ versionsstyret fil — de må aldrig bruges i produktion.**
 Jeg har allerede klikket igennem lokalt: login, tvunget kodeskift, dashboard,
 kontrakter, medlemmer, honorar. Alt renderede korrekt med rigtige tal.
 
-### 4. Sæt sidecaren op — så virker PDF, Drive, afstand og mail
+### 4. Sæt sidecaren op — så virker PDF, Drive, afstand og mail  ← ANBEFALET NÆSTE
 
 Uden denne virker fire ting ikke. **Alt andet virker.**
 
@@ -263,13 +267,13 @@ binær: gennemføres requesten, passede den.
   engangsobjekter i produktion (`__diag__` og `bench`) med en `bandName: "diag"`-række.
 - **Operatør-tokens dør ikke ved kodeskift**, som medlems-tokens gør via `pwFp`.
   Er koden kompromitteret, skift `MASTER_SECRET` for at dræbe alle tokens.
-- **Ingen har klikket igennem den live app** — kun lokalt. Se skridt 2.
 - **iCal-feedet var i stykker siden juli** — før dette arbejde. Frontenden byggede
   URL'en som `location.pathname + '?action=ical'`, hvilket pegede på app-roden;
   den gamle Worker havde ingen sådan rute, så et kalenderabonnement hentede
   `index.html`. Rettet 27/8: frontenden peger på `/ical`, og ruten proxyer til
-  Apps Script når flaget er `sheets`. **Ikke verificeret mod et rigtigt
-  kalenderprogram** — værd at prøve når band-id'et er kendt.
+  Apps Script når flaget er `sheets`. Verificeret 27/8: ruten svarer
+  `text/calendar`. **Ikke prøvet med et gyldigt token mod et rigtigt
+  kalenderprogram** — det kræver et feed-token fra operatør-panelet.
 - **Onboarding-emailen var en tom knap** indtil 27/8. Nu implementeret via
   Resend, men kan først virke når `RESEND_API_KEY` og `MAIL_FROM` er sat.
 - **Planens 12-trins gennemklikning** er ikke kørt i sin helhed. Den dækker
