@@ -176,6 +176,100 @@ export async function adminResetMemberPassword(ctx) {
 }
 
 /**
+ * operatorListMembers — bandets medlemmer set udefra.
+ *
+ * Findes fordi operatøren ellers arbejder i blinde: `adminResetMemberPassword`
+ * og `operatorSetMemberRole` identificerer folk på e-mail, og operatøren er
+ * ikke medlem af bandet og har derfor ingen liste at slå op i.
+ *
+ * Returnerer KUN det panelet skal bruge — navn, e-mail, rolle. Ikke telefon,
+ * adresse eller kontonummer: operatøren skal kunne udpege en administrator,
+ * ikke læse bandets persondata.
+ */
+export async function operatorListMembers(ctx) {
+  const { env, p } = ctx;
+  const bandId = String(p.bandId || p.targetBandId || '').trim();
+  if (!bandId) return { ok: false, error: 'bandId mangler' };
+
+  const bandRow = await masterStub(env).getBand(bandId);
+  if (!bandRow) return { ok: false, error: 'Ukendt band: ' + bandId };
+
+  const alle = await bandStub(env, bandId).listMembers();
+  return {
+    ok: true,
+    members: alle.map(m => ({
+      id: m.id, name: m.name, email: m.email, role: m.role
+    }))
+  };
+}
+
+/**
+ * operatorSetMemberRole — udpeger eller fjerner en administrator.
+ *
+ * Baggrunden: et band oprettes med en admin ud fra de oplysninger vi har på
+ * det tidspunkt, fx `jesper@dmdt.dk`. Når medlemmerne senere er lagt ind, viser
+ * det sig at samme person i virkeligheden hedder `jesper@steensbeck.dk`.
+ * Uden denne action skulle pladsholderen logge ind for at forfremme sig selv —
+ * altså skulle nogen kende en kode til en konto der ikke burde findes.
+ *
+ * Bandet kan have flere administratorer; det er ikke en udskiftning men en
+ * rolleændring. Fjern pladsholder-medlemmet bagefter fra bandets eget
+ * admin-panel (Medlemmer → Slet), hvor sletningen også rydder deltagelser og
+ * login-log.
+ */
+export async function operatorSetMemberRole(ctx) {
+  const { env, p, operator } = ctx;
+  const bandId = String(p.bandId || p.targetBandId || '').trim();
+  if (!bandId) return { ok: false, error: 'bandId mangler' };
+
+  const rolle = String(p.role || '').trim();
+  if (rolle !== 'admin' && rolle !== 'member') {
+    return { ok: false, error: 'Rollen skal være "admin" eller "member"' };
+  }
+
+  const master = masterStub(env);
+  const bandRow = await master.getBand(bandId);
+  if (!bandRow) return { ok: false, error: 'Ukendt band: ' + bandId };
+
+  const band = bandStub(env, bandId);
+  const alle = await band.listMembers();
+
+  // Panelet sender id; e-mail accepteres også, så action'en kan bruges i hånden.
+  const id = String(p.memberId || '').trim();
+  const email = String(p.memberEmail || '').toLowerCase().trim();
+  const maal = id ? alle.find(m => m.id === id)
+             : email ? alle.find(m => String(m.email).toLowerCase() === email)
+             : null;
+  if (!maal) return { ok: false, error: 'Medlemmet findes ikke i bandet' };
+
+  if (maal.role === rolle) {
+    return { ok: true, uaendret: true, member: { id: maal.id, email: maal.email, role: rolle } };
+  }
+
+  // Et band uden administrator kan ikke administreres af nogen — hverken
+  // medlemmer eller operatøren, som ikke kan gemme kontrakter og honorar.
+  // Genoprettelsen ville kræve netop denne action, så tilstanden er en
+  // blindgyde vi nægter at gå ind i.
+  if (rolle === 'member') {
+    const antalAdmins = alle.filter(m => m.role === 'admin').length;
+    if (antalAdmins <= 1) {
+      return {
+        ok: false,
+        error: 'Bandet ville stå uden administrator. Udpeg en anden først.'
+      };
+    }
+  }
+
+  const r = await band.updateMember(maal.id, { role: rolle });
+  if (!r.ok) return { ok: false, error: 'Kunne ikke ændre rollen' };
+
+  await master.audit(operator.email, 'rolle-aendret', bandId,
+    maal.email + ': ' + maal.role + ' → ' + rolle);
+
+  return { ok: true, member: { id: maal.id, email: maal.email, role: rolle } };
+}
+
+/**
  * runRetentionNow — kører den natlige oprydning med det samme.
  *
  * Samme arbejde som cron'en, men på forlangende. Nyttigt når man netop har

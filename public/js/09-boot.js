@@ -860,6 +860,11 @@ function opRenderEditor(){
         <div class="field" style="flex:1"><label>Email</label><input id="opResetEmail" class="input" type="email" placeholder="bruger@band.dk"></div>
         <button class="btn btn-ghost" onclick="opResetPassword(this)">Nulstil kode</button>
       </div>
+      <div style="border-top:1px solid var(--ink-line-soft);margin-top:14px;padding-top:14px">
+        <div class="eyebrow" style="margin-bottom:6px">Administratorer</div>
+        <p style="color:var(--cream-mute);font-size:12px;margin:0 0 10px">Bandet oprettes med én administrator ud fra de oplysninger vi havde. Er den e-mail en pladsholder, kan du udpege den rigtige person her — pladsholderen behøver aldrig logge ind. Et band skal have mindst én.</p>
+        <div id="opMemberList"><span class="spinner" style="width:12px;height:12px"></span> Henter medlemmer…</div>
+      </div>
       <p style="color:var(--cream-mute);font-size:12px;margin:14px 0 0;border-top:1px solid var(--ink-line-soft);padding-top:12px">Bankoplysninger og CPR styrer bandet selv under <strong>Indstillinger</strong> i deres eget admin-panel.</p>
     </div>
 
@@ -881,6 +886,7 @@ function opRenderEditor(){
   // Vis bandets faktiske udseende (tema + HEX-overrides + font) live mens man redigerer.
   opPreviewAppearance();
   opLoadFeed();
+  opLoadMembers();
 }
 
 let OP_FEED_URL = '';
@@ -890,6 +896,75 @@ let OP_FEED_URL = '';
 // været der siden Worker-migreringen; dengang appen kaldte Apps Script direkte,
 // ramte ?action=ical dens doGet.
 function opFeedUrl(token){ return location.origin + '/ical?band=' + encodeURIComponent(OP_CFG._bandId) + '&token=' + encodeURIComponent(token); }
+
+// ── Administratorer ────────────────────────────────────────────────────────
+// Operatøren er ikke medlem af bandet og har derfor ingen medlemsliste at slå
+// op i. Uden den skulle man gætte e-mails for at udpege en administrator.
+async function opLoadMembers(){
+  const box = document.getElementById('opMemberList');
+  if (!box) return;
+  try {
+    const d = await _apiCall('operatorListMembers', { bandId: OP_CFG._bandId });
+    if (!d || !d.ok){
+      box.innerHTML = '<span style="color:var(--danger);font-size:12px">' +
+        escapeHtml((d && d.error) || 'Kunne ikke hente medlemmer') + '</span>';
+      return;
+    }
+    opRenderMembers(d.members || []);
+  } catch(e){
+    box.innerHTML = '<span style="color:var(--danger);font-size:12px">Netværksfejl: ' +
+      escapeHtml(e.message) + '</span>';
+  }
+}
+
+function opRenderMembers(members){
+  const box = document.getElementById('opMemberList');
+  if (!box) return;
+  if (!members.length){
+    box.innerHTML = '<span style="color:var(--cream-mute);font-size:12px">Bandet har ingen medlemmer endnu.</span>';
+    return;
+  }
+  const antalAdmins = members.filter(m => m.role === 'admin').length;
+  box.innerHTML = members.map(m => {
+    const erAdmin = m.role === 'admin';
+    // Sidste administrator kan ikke fjernes: et band uden admin kan ikke
+    // administreres af nogen, og kun denne action kunne rette op på det.
+    const sidste = erAdmin && antalAdmins <= 1;
+    // Data-attributter frem for inline onclick: id og e-mail kommer fra bandets
+    // egne data, og et navn med et apostrof ville ellers bryde ud af
+    // attributten. Knappen bindes med en lytter nedenfor.
+    const knap = sidste
+      ? '<span style="color:var(--cream-mute);font-size:11px">eneste admin</span>'
+      : '<button class="btn btn-ghost btn-sm" data-role-btn data-member-id="' +
+        escapeHtml(m.id) + '" data-role="' + (erAdmin ? 'member' : 'admin') + '">' +
+        (erAdmin ? 'Fjern admin' : 'Gør til admin') + '</button>';
+    return '<div style="display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid var(--ink-line-soft)">' +
+      '<span style="flex:1;font-size:13px">' + escapeHtml(m.name || '(uden navn)') +
+      '<span style="color:var(--cream-mute)"> · ' + escapeHtml(m.email) + '</span></span>' +
+      (erAdmin ? '<span class="chip chip-ok" style="font-size:11px">ADMIN</span>' : '') +
+      knap + '</div>';
+  }).join('');
+
+  box.querySelectorAll('[data-role-btn]').forEach(b => {
+    b.onclick = () => opSetRole(b, b.getAttribute('data-member-id'), b.getAttribute('data-role'));
+  });
+}
+
+async function opSetRole(btn, memberId, role){
+  await withBusy(btn, 'Gemmer…', async () => {
+    try {
+      const d = await _apiCall('operatorSetMemberRole',
+        { bandId: OP_CFG._bandId, memberId: memberId, role: role });
+      if (d && d.ok){
+        toast(role === 'admin' ? 'Udpeget som administrator' : 'Administrator-rollen fjernet');
+        await opLoadMembers();
+        // Bandlistens "Ingen admin"-advarsel bygger på health-cachen.
+        delete OP_HEALTH[OP_CFG._bandId];
+        opLoadHealth();
+      } else toast((d && d.error) || 'Kunne ikke ændre rollen', 'err');
+    } catch(e){ toast('Netværksfejl: ' + e.message, 'err'); }
+  });
+}
 
 async function opLoadFeed(){
   const box = document.getElementById('opFeedBox');

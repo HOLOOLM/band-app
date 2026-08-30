@@ -34,7 +34,8 @@ import {
 import {
   operatorLogin, listTenants, registerTenant, updateTenant, setTenantStatus,
   bandHealth, getAuditLog, backupBand, migrateAllBands, deleteTenant,
-  operatorChangePassword, adminResetMemberPassword, runRetentionNow
+  operatorChangePassword, adminResetMemberPassword, runRetentionNow,
+  operatorListMembers, operatorSetMemberRole
 } from './operator.js';
 import {
   getAllJobs, getAllHonorar, getFeedUrl, rotateFeedToken
@@ -145,6 +146,11 @@ export const ACTIONS = {
   // sammenligne alle 63 action-navne frontenden bruger mod denne tabel.
   adminResetMemberPassword: { scope: 'master', auth: 'operator', fn: adminResetMemberPassword },
   runRetentionNow:          { scope: 'master', auth: 'operator', fn: runRetentionNow },
+  // Operatøren udpeger en administrator. Et band oprettes med en admin ud fra
+  // det vi ved på oprettelsestidspunktet; er den e-mail en pladsholder, skal
+  // rollen kunne flyttes UDEN at nogen logger ind som pladsholderen.
+  operatorListMembers:      { scope: 'master', auth: 'operator', fn: operatorListMembers },
+  operatorSetMemberRole:    { scope: 'master', auth: 'operator', fn: operatorSetMemberRole },
   // adminDeleteBand er FJERNET 30/8. Den lod bandets EGEN admin slette hele
   // bandet permanent — database, fakturaarkiv og faktureringsoplysninger — med
   // en prompt() som eneste værn. Rollen "admin" i et band er typisk et menigt

@@ -229,6 +229,52 @@ export async function adminChecks(ydreEnv, ok) {
      vaernet.ok === false && /allerede/.test(String(vaernet.error || '')),
      vaernet.error);
 
+  // ── Operatøren udpeger en administrator ─────────────────────────────────
+  //
+  // Præcis scenariet actionen findes til: IMP blev oprettet med Jesper på
+  // pladsholderen jesper@dmdt.dk. Rollen skal kunne flyttes til den rigtige
+  // konto UDEN at nogen logger ind som pladsholderen.
+  const medlemsListe = await kald('operatorListMembers', { bandId: IMP }, opCreds);
+  ok('operatorListMembers: viser bandets medlemmer med rolle',
+     medlemsListe.ok === true && medlemsListe.members.length === 2 &&
+     medlemsListe.members.some(m => m.email === 'jesper@dmdt.dk' && m.role === 'admin'),
+     JSON.stringify((medlemsListe.members || []).map(m => m.email + ':' + m.role)));
+  // Operatøren skal kunne udpege en admin, ikke læse bandets persondata.
+  // m1 har telefon 60 24 60 60 i fikstureringen, så fraværet er et rigtigt bevis.
+  ok('operatorListMembers: lækker ikke telefon, adresse eller kontonummer',
+     !JSON.stringify(medlemsListe).includes('60 24 60 60'));
+
+  const forfrem = await kald('operatorSetMemberRole',
+    { bandId: IMP, memberId: 'm2', role: 'admin' }, opCreds);
+  ok('operatorSetMemberRole: udpeger et medlem som administrator',
+     forfrem.ok === true, forfrem.error);
+  ok('operatorSetMemberRole: rollen er faktisk skrevet',
+     (await impBand.findMemberById('m2')).role === 'admin');
+
+  const fjern = await kald('operatorSetMemberRole',
+    { bandId: IMP, memberEmail: 'jesper@dmdt.dk', role: 'member' }, opCreds);
+  ok('operatorSetMemberRole: fjerner rollen fra pladsholderen (også via e-mail)',
+     fjern.ok === true && (await impBand.findMemberById('m1')).role === 'member',
+     fjern.error);
+
+  // Blindgyden: uden administrator kan bandet ikke administreres af NOGEN, og
+  // kun denne action kunne rette op på det.
+  const sidsteAdmin = await kald('operatorSetMemberRole',
+    { bandId: IMP, memberId: 'm2', role: 'member' }, opCreds);
+  ok('operatorSetMemberRole: nægter at fjerne den sidste administrator',
+     sidsteAdmin.ok === false && /uden administrator/i.test(String(sidsteAdmin.error || '')),
+     sidsteAdmin.error);
+  ok('operatorSetMemberRole: bandet har stadig en administrator',
+     (await impBand.findMemberById('m2')).role === 'admin');
+
+  const ukendtRolle = await kald('operatorSetMemberRole',
+    { bandId: IMP, memberId: 'm2', role: 'superbruger' }, opCreds);
+  ok('operatorSetMemberRole: afviser en ukendt rolle', ukendtRolle.ok === false,
+     ukendtRolle.error);
+
+  // Gaten på de to actions ligger længere nede, hvor band-admin-legitimationen
+  // (kaldA) er dannet — den findes først på det tidspunkt.
+
   const backupFe = await kald('backupBand', { bandId: A }, opCreds);
   ok('backupBand: virker med frontendens parameternavn (bandId)',
      backupFe.ok === true && backupFe.bandId === A, backupFe.error);
@@ -555,6 +601,17 @@ export async function adminChecks(ydreEnv, ok) {
      !gammeltEfterRotation.includes('BEGIN:VEVENT'));
   ok('rotateFeedToken: det nye token virker',
      (await buildIcal(env, A, nytToken.token)).includes('BEGIN:VEVENT'));
+
+  // ── Rolleændring er operatørens, ikke bandets ───────────────────────────
+  // En band-admin må ikke kunne forfremme nogen — heller ikke i sit eget band.
+  // Kunne de det, ville "admin" være en rolle der kan sprede sig selv.
+  const admForsoeg = await kaldA('operatorSetMemberRole',
+    { bandId: A, memberId: 'm1', role: 'admin' });
+  ok('operatorSetMemberRole: en band-admin kan IKKE ændre roller',
+     admForsoeg.ok === false, admForsoeg.error);
+  const admListe = await kaldA('operatorListMembers', { bandId: A });
+  ok('operatorListMembers: kræver operatør-adgang',
+     admListe.ok === false, admListe.error);
 
   // ── Kun operatøren må slette et band ────────────────────────────────────
   //
