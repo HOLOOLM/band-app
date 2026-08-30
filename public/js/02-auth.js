@@ -45,7 +45,11 @@ async function doChangePassword(){
   clearErr('changePwErr');
   const a = document.getElementById('newPw1').value;
   const b = document.getElementById('newPw2').value;
-  if (a.length < 12){ showErr('changePwErr','Min. 12 tegn.'); return; }
+  // 6 tegn, ikke 12: DMDT's medlemmer havde 6-tegns koder i prototypen, og
+  // grænsen skal lade dem taste den samme kode igen ved det tvungne skift
+  // efter migreringen. Serveren håndhæver ingen længde — den ser kun
+  // sha256-hashet (auth.js:105) — så dette er det eneste sted reglen findes.
+  if (a.length < 6){ showErr('changePwErr','Min. 6 tegn.'); return; }
   if (a !== b){ showErr('changePwErr','De to felter er ikke ens.'); return; }
   const btn = document.getElementById('changePwBtn');
   btn.disabled = true; btn.textContent = 'Gemmer...';
