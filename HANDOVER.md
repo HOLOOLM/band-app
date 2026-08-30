@@ -1,6 +1,6 @@
 # Overdragelse — datalag migreret til Cloudflare Durable Objects
 
-**Skrevet 2026-08-27. Læs denne først i en ny chat.**
+**Skrevet 2026-08-27, opdateret 2026-08-29. Læs denne først i en ny chat.**
 
 Planen ligger i `~/.claude/plans/we-need-to-create-joyful-pancake.md` (563 linjer,
 opdateret undervejs). Den er autoritativ på *hvorfor*; dette dokument er
@@ -21,6 +21,8 @@ autoritativ på *hvor vi er*.
 | Fakturaarkiv | Bucket `band-app-arkiv`, EU-jurisdiktion, oprettet 28/8 |
 | Sidecar | Kører på det gamle Apps Script-projekt, verificeret 29/8 |
 | Operatør | Oprettet 29/8. `BOOTSTRAP_TOKEN` skal være slettet igen |
+| Bandet `dmdt` | Oprettet på det nye lag, branding + logo på plads 29/8 |
+| **NÆSTE** | **Migrér prototypens data ind — se skridt 7** |
 
 Omskiftningen er sket. Google Sheet'et er urørt og kan rulles tilbage til, men
 `Code.gs` er overskrevet af sidecaren — se skridt 6 for hvad det koster.
@@ -161,6 +163,51 @@ Sheets ved enhver tastefejl — tolv tjek håndhæver det.
 
 ---
 
+### 7. Migrér prototypens data ind  ← START HER
+
+Hele værktøjet er bygget og testet. Det der mangler, er at køre det.
+
+**7a. Tæl hvad der ligger.** Åbn PROTOTYPENS Apps Script-projekt — det med
+deployment `AKfycbxQlGk_…` og regneark `1bwk_Bj2LADx_JgE6w1GlwPsos4JlnGAD5CO2gWmIV4w`.
+Ikke sidecarens. Tilføj `apps-script/Eksporter-fra-prototype.gs` som en EKSTRA
+fil (**rør ikke prototypens `Code.gs`** — den skal blive ved med at virke), og kør
+`taelAlt()`.
+
+**7b. Eksportér.** Kør `eksporterAlt()`. Loggen giver en Drive-URL til en privat
+JSON-fil. **Filen indeholder persondata inkl. CPR** — slet den fra Drive OG
+papirkurven når importen er verificeret, og læg den aldrig i repoet.
+
+`eksporterPdfer()` skal formentlig IKKE bruges — se nedenfor.
+
+**7c. Opret et TOMT band.** Importen afvises hvis bandet allerede har medlemmer,
+og `dmdt` har din admin på `m1` — samme id som prototypens første medlem. Opret
+enten et nyt band uden at udfylde admin-felterne, eller slet `dmdt` og opret det
+forfra uden admin.
+
+**7d. Importér.** `importBandData` med `{ bandId, data: <hele JSON-filen> }`.
+Svaret indeholder `startkoder` — én pr. medlem. **De vises kun én gang.** Skriv
+dem ned og fordel dem; hvert medlem tvinges til at skifte ved første login.
+
+**7e. Efterarbejde.** Indtast bandets CPR under Indstillinger (eksportens
+`_bandCpr` viser værdien). Klik ☁ Arkivér på hver afregning, så de lægges i R2.
+
+### Prototypens fakturaer er ALDRIG blevet arkiveret
+
+Vigtigt fund 29/8: alle tre afregninger i prototypen viser knappen *"☁ Arkivér
+til Drive"*, ikke *"↗ Drive"*. I prototypens egen kode er det else-grenen for
+`i.driveUrl` — altså er `driveFileId` tom på dem alle.
+
+Der er derfor **ingen PDF'er at flytte**. Rækkerne (nummer, kontrakt, beløb,
+dato, status) kommer med i den almindelige import, og PDF'en dannes på ny i det
+nye lag med ét klik. Det er endda den bedre vej: den nye arkivkopi er
+strukturelt CPR-fri, mens prototypens fjernede CPR med et regulært udtryk
+bagefter.
+
+`importInvoicePdfs` og `eksporterPdfer` bliver liggende til et band der
+FAKTISK har Drive-arkiverede fakturaer.
+
+---
+
 ## VIGTIGT før første rigtige CPR-nummer
 
 `CPR_KEY` skal i en password manager. Cloudflare-hemmeligheder er skrive-kun —
@@ -240,14 +287,16 @@ Derfor afvises en import nu, hvis bandet allerede har medlemmer, med mindre
 `overskriv: true` sendes. **Importér ind i et tomt band**, eller acceptér
 bevidst at admin-rækken erstattes.
 
-### Fakturaerne bevares byte for byte
+### Fakturaerne: intet at flytte for DMDT
 
-De originale PDF'er flyttes til R2 frem for at blive gendannet, fordi en
-afregning der er sendt til en arrangør bør arkiveres som netop det der blev
-sendt. Prototypen fjernede CPR i browseren med et regulært udtryk
-(`index.html:3053`) — altså ikke strukturelt som det nye lag gør. Filerne er
-bekræftet CPR-frie ved gennemsyn, og dét er grundlaget. De gamle Drive-filer
-røres ikke og kan slettes når importen er verificeret.
+`importInvoicePdfs` bevarer originale PDF'er byte for byte frem for at gendanne
+dem — en afregning der er sendt til en arrangør bør arkiveres som netop det der
+blev sendt.
+
+**Men DMDT har ingen.** Prototypens tre afregninger er aldrig blevet arkiveret
+til Drive (se skridt 7). De dannes derfor på ny i det nye lag, hvor CPR-friheden
+er strukturel frem for et regulært udtryk. Værktøjet bliver liggende til et band
+der faktisk har Drive-arkiver.
 
 ## "Kunne ikke hente status" — og revisionens egen blindvinkel (29/8)
 
@@ -446,9 +495,15 @@ Kun tre filer, alle bagudkompatible med den gamle backend:
 ## DMDT-brandingen
 
 `brand-presets/dmdt.json` indeholder DMDT's værdier udtrukket 1:1 fra
-prototypen, backend-uafhængigt. Alle 14 CSS-variabler er verificeret identiske
-med prototypens `:root`, og rider-teksterne var i forvejen ord-for-ord ens
+prototypen, backend-uafhængigt. Rider-teksterne var i forvejen ord-for-ord ens
 (23/23 tekster).
+
+**Anvendt og verificeret i produktion 29/8.** Alle ti HEX-værdier plus begge
+fonte er læst tilbage som beregnede CSS-variabler på `?band=dmdt` og matcher
+prototypen. Logoet er uploadet. Login-skærmen har brandingen FØR login, fordi
+`getConfig` bevidst er den eneste offentlige action — bandets navn, farver og
+logo er dermed offentlige for enhver der kender band-id'et. Alt andet kræver
+session.
 
 `bankKto` står som `1465171` i prototypen men `0001465171` i
 `settings-template.md` — **afklar hvad banken bruger** før kontrakter udsendes.
@@ -493,8 +548,16 @@ binær: gennemføres requesten, passede den.
   Apps Script når flaget er `sheets`. Verificeret 27/8: ruten svarer
   `text/calendar`. **Ikke prøvet med et gyldigt token mod et rigtigt
   kalenderprogram** — det kræver et feed-token fra operatør-panelet.
-- **Onboarding-emailen var en tom knap** indtil 27/8. Nu implementeret via
-  Resend, men kan først virke når `RESEND_API_KEY` og `MAIL_FROM` er sat.
+- **Mail er ikke sat op.** `RESEND_API_KEY` og `MAIL_FROM` mangler, så
+  onboarding-mails er døde knapper. Intet andet påvirkes: `sendMail` fejler
+  kontrolleret, og hakket i "Opret band" er fravalgt som standard. Kræver et
+  domæne verificeret med SPF/DKIM/DMARC i Resend.
+- **Rider-teksterne er ikke efterprøvet** mod prototypen efter migreringen.
+  `riderTemplates` står tom, hvilket betyder at appens indbyggede skabeloner
+  bruges — de er ifølge `dmdt.json` prototypens rider ord for ord. Udfyld
+  kontaktfelterne (Jesper Steensbeck / 60 24 60 60, Henning Thiim /
+  30 26 97 88), så pladsholderne `__TECH_NAME__` m.fl. falder på plads, og
+  sammenlign så én rider.
 - **Planens 12-trins gennemklikning** er ikke kørt i sin helhed. Den dækker
   konflikt i to faner, signeringsflow, booker-portal, kryds-band og
   isolationstest. Kan køres når der er et band på det nye lag.
@@ -505,7 +568,12 @@ binær: gennemføres requesten, passede den.
 
 Sig noget i retning af:
 
-> Læs HANDOVER.md i band-app. Jeg vil fortsætte med [skridt N].
+> Læs HANDOVER.md i band-app. Jeg vil fortsætte med skridt 7 — migrering af
+> prototypens data.
+
+Alt frem til og med skridt 6 er gjort. Appen er **i drift** på Durable Objects,
+bandet `dmdt` er oprettet med fuld branding, og importværktøjet er bygget og
+testet. Det der mangler, er at køre eksport og import.
 
 Hukommelsen indeholder allerede de vigtigste beslutninger — se særligt
 `do-per-band-architecture` og `cloudflare-worker-deploy-gotchas`.
