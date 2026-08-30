@@ -556,6 +556,24 @@ export async function adminChecks(ydreEnv, ok) {
   ok('rotateFeedToken: det nye token virker',
      (await buildIcal(env, A, nytToken.token)).includes('BEGIN:VEVENT'));
 
+  // ── Kun operatøren må slette et band ────────────────────────────────────
+  //
+  // `adminDeleteBand` (scope: 'band', auth: 'admin') lod bandets EGEN admin
+  // slette alt permanent — database, fakturaarkiv, faktureringsoplysninger —
+  // med en prompt() som eneste værn. Fjernet 30/8.
+  //
+  // De to tjek dækker hver sin vej tilbage: at navnet genopstår i
+  // action-tabellen, og at deleteTenant får en svagere gate.
+  const gammeltNavn = await kaldA('adminDeleteBand', { confirm: A });
+  ok('adminDeleteBand: findes ikke længere',
+     gammeltNavn.ok === false && /ukendt handling/i.test(gammeltNavn.error),
+     gammeltNavn.error);
+  const adminForsoeg = await kaldA('deleteTenant', { targetBandId: A, confirm: A });
+  ok('deleteTenant: en band-admin kan IKKE slette et band',
+     adminForsoeg.ok === false, adminForsoeg.error);
+  ok('deleteTenant: bandet står stadig i registret efter admins forsøg',
+     (await master.getBand(A)) !== null);
+
   // ── deleteTenant kræver bekræftelse ─────────────────────────────────────
   const utenConfirm = await kald('deleteTenant', { targetBandId: B }, opCreds);
   ok('deleteTenant: kræver bekræftelse med band-id',

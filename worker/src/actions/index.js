@@ -145,9 +145,15 @@ export const ACTIONS = {
   // sammenligne alle 63 action-navne frontenden bruger mod denne tabel.
   adminResetMemberPassword: { scope: 'master', auth: 'operator', fn: adminResetMemberPassword },
   runRetentionNow:          { scope: 'master', auth: 'operator', fn: runRetentionNow },
-  // adminDeleteBand er bandets EGEN admin der sletter sit band; deleteTenant er
-  // operatørens vej til det samme. Begge kræver bekræftelse med band-id.
-  adminDeleteBand:          { scope: 'band',   auth: 'admin',    fn: deleteTenant },
+  // adminDeleteBand er FJERNET 30/8. Den lod bandets EGEN admin slette hele
+  // bandet permanent — database, fakturaarkiv og faktureringsoplysninger — med
+  // en prompt() som eneste værn. Rollen "admin" i et band er typisk et menigt
+  // medlem der har fået den, ikke nogen der har ansvaret for at data bevares,
+  // og handlingen kan ikke fortrydes.
+  //
+  // Sletning er nu udelukkende operatørens: deleteTenant nedenfor. Er navnet
+  // her fristende at genindføre, så husk at auth: 'admin' + scope: 'band'
+  // betyder ENHVER admin i ETHVERT band.
   getAuditLog:      { scope: 'master', auth: 'operator', fn: getAuditLog },
   backupBand:       { scope: 'master', auth: 'operator', fn: backupBand },
   // Migrering fra DMDT-prototypen. Master-scope: de peger på et band via

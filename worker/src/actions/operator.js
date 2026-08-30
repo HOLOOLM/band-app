@@ -518,10 +518,13 @@ export async function migrateAllBands(ctx) {
  */
 export async function deleteTenant(ctx) {
   const { env, p, operator } = ctx;
-  // Samme funktion betjener to actions: operatørens `deleteTenant` (sender
-  // targetBandId) og bandets eget `adminDeleteBand` (08-admin.js:335, hvor
-  // _apiCall injicerer bandId). Uden begge navne kunne et band ikke slette sig
-  // selv.
+  // KUN operatøren kan slette et band. `adminDeleteBand`, som lod bandets egen
+  // admin gøre det, er fjernet 30/8 — se actions/index.js.
+  //
+  // Begge parameternavne læses stadig: operatør-panelet sender `bandId` fra
+  // bandlisten (09-boot.js) og `targetBandId` fra kortets egen knap. Læste vi
+  // kun det ene, ville sletning fejle fra det ene sted uden forklaring — samme
+  // fejlklasse som bandHealth havde.
   const bandId = String(p.targetBandId || p.bandId || '').trim();
   if (!bandId) return { ok: false, error: 'bandId mangler' };
   // Kræver eksplicit bekræftelse med bandets eget id, så et fejlklik i en liste

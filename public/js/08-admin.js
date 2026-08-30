@@ -197,10 +197,9 @@ async function renderAdminSettings(){
         </div>
       </div>
 
-      <div class="card" style="padding:24px;border:1px solid rgba(192,57,43,.2)">
-        <div class="eyebrow" style="margin-bottom:8px;color:var(--danger)">Farezone</div>
-        <p class="muted" style="font-size:13px;margin-bottom:16px">Sletter permanent alle data for dette band: database, fakturaarkiv og faktureringsoplysninger. Handlingen kan ikke fortrydes.</p>
-        <button class="btn btn-danger" onclick="confirmDeleteBand()">Slet dette band permanent</button>
+      <div class="card" style="padding:24px">
+        <div class="eyebrow" style="margin-bottom:8px">Sletning af bandet</div>
+        <p class="muted" style="font-size:13px;margin:0">Et band kan kun slettes af operatøren. Kontakt din kontaktperson, hvis bandet skal lukkes ned — så sikrer vi at kontrakter og honorarafregninger er hentet ud først.</p>
       </div>
 
     </div>`;
@@ -326,18 +325,12 @@ async function saveBillingInfo(btn){
   });
 }
 
-async function confirmDeleteBand(){
-  const bandId = BAND_ID || '';
-  const input = prompt(`Dette sletter ALLE data for bandet permanent.\n\nSkriv band-ID'et "${bandId}" for at bekræfte:`);
-  if (input === null) return;
-  if (input.trim() !== bandId) { toast('Forkert band-ID — sletning annulleret', 'err'); return; }
-  try {
-    const d = await apiPost('adminDeleteBand', { confirm: bandId });
-    if (!d.ok) { toast(d.error, 'err'); return; }
-    toast('Band slettet — logger ud');
-    setTimeout(() => logout(), 1500);
-  } catch(e){ toast(e.message, 'err'); }
-}
+// confirmDeleteBand er FJERNET 30/8. Et band kunne slettes permanent af sin
+// egen admin, beskyttet af intet andet end en prompt() man skulle skrive
+// band-id'et i. Sletningen tager database, fakturaarkiv og fakturerings-
+// oplysninger med sig og kan ikke fortrydes — og bandets admin er typisk et
+// menigt medlem der har fået rollen, ikke en der har ansvaret for at data
+// bevares. Kun operatøren kan slette et band nu (deleteTenant).
 
 // ─── Fakturaarkiv (R2, tidligere Google Drive) ──────────────────
 

@@ -13,7 +13,7 @@ autoritativ på *hvor vi er*.
 | | |
 |---|---|
 | Alle faser (1–6) | **Kodet, testet og deployet** |
-| Selvtest | **477 tjek, alle grønne**, verificeret idempotent over gentagne kørsler |
+| Selvtest | **480 tjek, alle grønne**, verificeret idempotent over gentagne kørsler |
 | Kontraktrevision | **Ren** — `node worker/tools/audit-actions.mjs` |
 | Ny Worker-kode | ~10.700 linjer i 46 moduler, 78 actions |
 | `Code.gs` → sidecar | 4.762 → 219 linjer (`apps-script/Sidecar.gs`) |
@@ -305,6 +305,31 @@ Medlemmer → vælg medlem → "Nulstil adgangskode" nederst i drawer'en. Koden
 vises straks, og medlemmet tvinges til at vælge sin egen ved næste login.
 Verificeret ved gennemklikning 30/8. En admin kan nulstille en anden admin og
 sig selv — `resetPassword` tjekker ikke modtagerens rolle.
+
+## Kun operatøren kan slette et band (30/8)
+
+`adminDeleteBand` var gated som `scope: 'band', auth: 'admin'` — altså kunne
+ENHVER admin i et band slette hele bandet permanent: database, fakturaarkiv og
+faktureringsoplysninger. Eneste værn var en `prompt()` man skulle skrive
+band-id'et i.
+
+Rollen "admin" i et band er typisk et menigt medlem der har fået den, ikke
+nogen der bærer ansvaret for at data bevares — og handlingen kan ikke fortrydes.
+
+Fjernet tre steder: action'en (`actions/index.js`), knappen i Farezonen og
+funktionen `confirmDeleteBand` (`08-admin.js`). Indstillinger viser i stedet en
+sætning om at operatøren skal kontaktes. Sletning går nu udelukkende gennem
+`deleteTenant`, som kræver operatør-token.
+
+Tre tjek dækker begge veje tilbage — at navnet genopstår i tabellen, og at
+`deleteTenant` får en svagere gate:
+
+    adminDeleteBand: findes ikke længere            → "Ukendt handling"
+    deleteTenant: en band-admin kan IKKE slette     → "Kræver operatør-adgang"
+    deleteTenant: bandet står stadig i registret
+
+Verificeret i UI'et: Farezonen, knappen og funktionen er alle væk, og
+operatørens egen sletning virker uændret.
 
 ## VIGTIGT før første rigtige CPR-nummer
 
