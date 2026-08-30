@@ -33,7 +33,7 @@
   "techContactName": "Henning Thiim",
   "techContactPhone": "30 26 97 88",
 
-  "_bank": "bankKto står som 1465171 i prototypen, men som 0001465171 i settings-template.md. Verificér hvad banken bruger før kontrakter udsendes.",
+  "_bank": "Afklaret 30/8: kontonummeret er 1465171 UDEN foranstillede nuller. settings-template.md sagde 0001465171 og tog fejl; skabelonen er rettet til en generisk pladsholder, da bankoplysninger er pr. band.",
   "bankName": "Sparekassen for Nr. Nebel og Omegn",
   "bankReg": "9682",
   "bankKto": "1465171",
