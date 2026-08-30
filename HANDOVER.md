@@ -13,9 +13,9 @@ autoritativ på *hvor vi er*.
 | | |
 |---|---|
 | Alle faser (1–6) | **Kodet, testet og deployet** |
-| Selvtest | **455 tjek, alle grønne**, verificeret idempotent over gentagne kørsler |
+| Selvtest | **467 tjek, alle grønne**, verificeret idempotent over gentagne kørsler |
 | Kontraktrevision | **Ren** — `node worker/tools/audit-actions.mjs` |
-| Ny Worker-kode | ~10.400 linjer i 45 moduler, 76 actions |
+| Ny Worker-kode | ~10.700 linjer i 46 moduler, 78 actions |
 | `Code.gs` → sidecar | 4.762 → 219 linjer (`apps-script/Sidecar.gs`) |
 | **I DRIFT** | **JA.** `BACKEND = "do"` siden 29/8 — Durable Objects er datalaget |
 | Fakturaarkiv | Bucket `band-app-arkiv`, EU-jurisdiktion, oprettet 28/8 |
@@ -201,6 +201,53 @@ parameternavne. Alle rettet 27/8; revisionen er ren.
 **Test-dækning beviser ikke kontrakt-overholdelse.** Det er den vigtigste lektion
 fra dagen, og grunden til at dette værktøj skal køres frem for at man stoler på
 grønne tjek.
+
+## Migrering fra DMDT-prototypen (29/8)
+
+Prototypen har **intet eksport-endpoint**, og dens data ligger i sit eget Google
+Sheet bag sit eget Apps Script-deployment (`AKfycbxQlGk_…`) — et andet end det
+sidecaren overtog. Det projekt er urørt og virker stadig, så data kan hentes
+uden at røre noget.
+
+**Ud:** `apps-script/Eksporter-fra-prototype.gs` indsættes som en EKSTRA fil i
+prototypens projekt (rør ikke dens `Code.gs`). `taelAlt()` tæller, `eksporterAlt()`
+skriver en privat JSON-fil i Drive, `eksporterPdfer(0)` henter de arkiverede
+faktura-PDF'er i portioner à 25.
+
+**Ind:** `importBandData` og `importInvoicePdfs`, begge operatør-gatede.
+
+### Tre ting følger ikke med, og hvorfor
+
+- **Adgangskoder.** Prototypens hash er en ældre generation som `lib/crypto.js`
+  bevidst ikke accepterer. Hvert medlem får en ny startkode og tvinges til at
+  skifte. Koderne returneres ÉN gang i importsvaret og kan ikke hentes igen.
+- **CPR pr. medlem.** Prototypens Members-ark har en `cpr`-kolonne; den nye
+  model har ét band-CPR krypteret i master. Det importeres ingen steder — heller
+  ikke i en log. Bandets CPR indtastes under Indstillinger.
+- **LoginLog.** Ren historik.
+
+### Værnet der kom ud af testen
+
+Importen skriver med INSERT OR REPLACE på id, hvilket gør den idempotent — en
+import der fejler halvvejs kan køres om. Men det betyder også at et id fra
+prototypen overskriver en eksisterende række med samme id.
+
+**Og de kolliderer:** `registerTenant` opretter bandets admin som `m1`
+(`operator.js:266`), præcis der hvor prototypens første medlem ligger. Selvtesten
+afslørede det ved at ni senere tjek pludselig ikke kunne logge ind.
+
+Derfor afvises en import nu, hvis bandet allerede har medlemmer, med mindre
+`overskriv: true` sendes. **Importér ind i et tomt band**, eller acceptér
+bevidst at admin-rækken erstattes.
+
+### Fakturaerne bevares byte for byte
+
+De originale PDF'er flyttes til R2 frem for at blive gendannet, fordi en
+afregning der er sendt til en arrangør bør arkiveres som netop det der blev
+sendt. Prototypen fjernede CPR i browseren med et regulært udtryk
+(`index.html:3053`) — altså ikke strukturelt som det nye lag gør. Filerne er
+bekræftet CPR-frie ved gennemsyn, og dét er grundlaget. De gamle Drive-filer
+røres ikke og kan slettes når importen er verificeret.
 
 ## "Kunne ikke hente status" — og revisionens egen blindvinkel (29/8)
 

@@ -51,6 +51,7 @@ import {
   operatorResetBookerPassword
 } from './booker.js';
 import { archiveInvoice } from './pdf.js';
+import { importBandData, importInvoicePdfs } from './import.js';
 
 // scope: hvilket lager action'en får udleveret
 //   'band'      → ctx.band er bandets DO-stub (kræver gyldigt bandId)
@@ -149,6 +150,10 @@ export const ACTIONS = {
   adminDeleteBand:          { scope: 'band',   auth: 'admin',    fn: deleteTenant },
   getAuditLog:      { scope: 'master', auth: 'operator', fn: getAuditLog },
   backupBand:       { scope: 'master', auth: 'operator', fn: backupBand },
+  // Migrering fra DMDT-prototypen. Master-scope: de peger på et band via
+  // targetBandId/bandId, og kun operatøren må flytte data ind i et band.
+  importBandData:   { scope: 'master', auth: 'operator', fn: importBandData },
+  importInvoicePdfs: { scope: 'master', auth: 'operator', fn: importInvoicePdfs },
   migrateAllBands:  { scope: 'master', auth: 'operator', fn: migrateAllBands },
   deleteTenant:     { scope: 'master', auth: 'operator', fn: deleteTenant },
 

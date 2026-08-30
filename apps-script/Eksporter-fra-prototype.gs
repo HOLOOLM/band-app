@@ -123,3 +123,73 @@ function taelAlt() {
     Logger.log(navn + ': ' + (sh ? Math.max(0, sh.getLastRow() - 1) : 'ARK MANGLER'));
   });
 }
+
+// ── PDF-eksport ─────────────────────────────────────────────────────────────
+
+/**
+ * Henter de arkiverede faktura-PDF'er ud af Drive, så de kan lægges i R2 og
+ * Drive helt kan slippes.
+ *
+ * KØRES SEPARAT fra eksporterAlt(), og i portioner. To grunde:
+ *   • Apps Script dræber en kørsel efter ca. 6 minutter. Én PDF ad gangen er
+ *     hurtigt, men 100 filer med base64-kodning er det ikke.
+ *   • base64 fylder ~33 % mere end filen. Holdes alt i ét dokument, risikerer
+ *     man at ramme grænsen for hvor stor en streng Apps Script vil skrive.
+ *
+ * Kør `eksporterPdfer(0)`. Loggen fortæller om der er flere tilbage, og hvilket
+ * tal du skal kalde med næste gang.
+ *
+ * De originale Drive-filer røres IKKE. De bliver liggende til du selv sletter
+ * dem, så du har historikken indtil importen er verificeret.
+ */
+var PDF_PORTION = 25;
+var PDF_MAKS_BYTES = 8 * 1024 * 1024;   // pr. fil; en faktura er typisk under 200 kB
+
+function eksporterPdfer(fra) {
+  var start = Number(fra) || 0;
+  var ss = SpreadsheetApp.openById(EKSPORT_SHEET_ID);
+  var sh = ss.getSheetByName('Invoices');
+  if (!sh) { Logger.log('Invoices-arket findes ikke.'); return; }
+
+  var alle = _laesArk(sh).filter(function (i) {
+    return String(i.driveFileId || '').trim() !== '';
+  });
+  Logger.log(alle.length + ' fakturaer har en Drive-fil.');
+  if (start >= alle.length) { Logger.log('Ingenting tilbage fra indeks ' + start + '.'); return; }
+
+  var portion = alle.slice(start, start + PDF_PORTION);
+  var ud = { _kilde: 'DMDT-prototype', _fra: start, _ialt: alle.length, pdfer: [] };
+  var sprunget = [];
+
+  portion.forEach(function (inv) {
+    try {
+      var blob = DriveApp.getFileById(String(inv.driveFileId)).getBlob();
+      var bytes = blob.getBytes();
+      if (bytes.length > PDF_MAKS_BYTES) {
+        sprunget.push(inv.invoiceNr + ' (for stor: ' + bytes.length + ' bytes)');
+        return;
+      }
+      ud.pdfer.push({
+        invoiceId: String(inv.id),
+        invoiceNr: String(inv.invoiceNr),
+        bytes: bytes.length,
+        pdfBase64: Utilities.base64Encode(bytes)
+      });
+    } catch (e) {
+      // En slettet eller utilgængelig fil må ikke stoppe resten.
+      sprunget.push(inv.invoiceNr + ' (' + (e && e.message || e) + ')');
+    }
+  });
+
+  var navn = 'dmdt-pdfer-' + start + '.json';
+  var fil = DriveApp.createFile(navn, JSON.stringify(ud), 'application/json');
+  try { fil.setSharing(DriveApp.Access.PRIVATE, DriveApp.Permission.NONE); } catch (e) {}
+
+  Logger.log('');
+  Logger.log('Hentet ' + ud.pdfer.length + ' PDF(er). Fil: ' + fil.getUrl());
+  if (sprunget.length) Logger.log('SPRUNGET OVER: ' + sprunget.join(', '));
+
+  var naeste = start + PDF_PORTION;
+  if (naeste < alle.length) Logger.log('Kør så: eksporterPdfer(' + naeste + ')');
+  else Logger.log('Det var dem alle.');
+}

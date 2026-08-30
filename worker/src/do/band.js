@@ -578,6 +578,157 @@ export class BandDO extends DurableObject {
   }
 
   /**
+   * Skriver et helt datasæt ind i bandet. Modstykket til exportAll.
+   *
+   * Findes for migreringen væk fra DMDT-prototypen, hvis data ligger i et
+   * Google Sheet med næsten samme kolonner — de to skemaer stammer fra samme
+   * kodebase.
+   *
+   * ── IDEMPOTENT ─────────────────────────────────────────────────────────────
+   * Alt skrives med INSERT OR REPLACE på primærnøglen. Kører man importen igen
+   * med samme fil, ender man i samme tilstand frem for med dubletter. Det er
+   * ikke en luksus: en import der fejler halvvejs skal kunne køres om, og under
+   * en migrering ved man sjældent præcis hvor langt man nåede.
+   *
+   * ── ADGANGSKODER FØLGER IKKE MED ───────────────────────────────────────────
+   * Kalderen skal have dannet passwordHash og pwSalt på forhånd. PBKDF2 er
+   * asynkron og kan ikke køre inde i transactionSync, og prototypens hashes er
+   * en anden generation som lib/crypto.js bevidst ikke længere accepterer.
+   *
+   * ── TÆLLERNE ───────────────────────────────────────────────────────────────
+   * Id'er som `c12` og `inv7` kommer fra tællere. Importerer man `c12` uden at
+   * flytte tælleren, uddeler næste kontraktoprettelse `c1` … `c12` igen og
+   * overskriver importerede rækker. Tællerne løftes derfor forbi det højeste
+   * tal der er set. Fakturanumre er undtaget: #nextInvoiceNr udleder dem fra
+   * rækkerne selv og kan ikke kollidere.
+   */
+  async importAll(data) {
+    await this.#ready();
+    const d = data || {};
+    const tal = { members: 0, contracts: 0, attendances: 0, invoices: 0, distanceCache: 0 };
+    const maks = {};
+
+    // Højeste taldel i et id, fx 'c12' → 12, 'a3_1' → 3.
+    const seTal = (navn, id) => {
+      const m = String(id || '').match(/^[a-z]+(\d+)/i);
+      if (!m) return;
+      const n = Number(m[1]);
+      if (Number.isFinite(n) && n > (maks[navn] || 0)) maks[navn] = n;
+    };
+
+    this.ctx.storage.transactionSync(() => {
+      for (const m of (d.members || [])) {
+        if (!m || !m.id) continue;
+        seTal('member', m.id);
+        this.#erstat('members', {
+          id: String(m.id), name: m.name || '', category: m.category || '',
+          instrument: m.instrument || '', phone: m.phone || '',
+          email: String(m.email || '').toLowerCase(), regAccount: m.regAccount || '',
+          address: m.address || '',
+          passwordHash: m.passwordHash || '', pwSalt: m.pwSalt || '',
+          forcePasswordChange: 1,
+          role: m.role === 'admin' ? 'admin' : 'member',
+          createdAt: m.createdAt || new Date().toISOString()
+        });
+        tal.members++;
+      }
+
+      for (const c of (d.contracts || [])) {
+        if (!c || !c.id) continue;
+        seTal('contract', c.id);
+        this.#erstat('contracts', {
+          id: String(c.id), type: c.type || '', status: c.status || 'udkast',
+          arrangoer: c.arrangoer || '', venue: c.venue || '',
+          date: c.date || '', getIn: c.getIn || '', soundcheck: c.soundcheck || '',
+          showtimeFrom: c.showtimeFrom || '', showtimeTo: c.showtimeTo || '',
+          sets: Number(c.sets) || 0, setMinutes: Number(c.setMinutes) || 0,
+          musicianCount: Number(c.musicianCount) || 0,
+          crewCount: Number(c.crewCount) || 0, guestCount: Number(c.guestCount) || 0,
+          honorar: Number(c.honorar) || 0,
+          paymentTerms: c.paymentTerms || '', paymentTermsOther: c.paymentTermsOther || '',
+          notes: c.notes || '', memberNote: c.memberNote || '',
+          createdAt: c.createdAt || new Date().toISOString(),
+          updatedAt: c.updatedAt || c.createdAt || new Date().toISOString()
+        });
+        tal.contracts++;
+      }
+
+      for (const a of (d.attendances || [])) {
+        if (!a || !a.id) continue;
+        seTal('attendance', a.id);
+        this.#erstat('attendances', {
+          id: String(a.id), contractId: String(a.contractId || ''),
+          memberId: String(a.memberId || ''),
+          share: Number(a.share) || 0, status: a.status || 'invited',
+          confirmedAt: a.confirmedAt || '', checkedInAt: a.checkedInAt || '',
+          startAddress: a.startAddress || '',
+          distanceKm: a.distanceKm === '' || a.distanceKm == null ? null : Number(a.distanceKm),
+          distanceOrigin: a.distanceOrigin || '',
+          returnHome: 0, distanceRoundTrip: 0
+        });
+        tal.attendances++;
+      }
+
+      for (const i of (d.invoices || [])) {
+        if (!i || !i.id) continue;
+        seTal('invoice', i.id);
+        this.#erstat('invoices', {
+          id: String(i.id), contractId: String(i.contractId || ''),
+          // TEXT i det nye skema (BAND_V2). Et tal fra regnearket ville ellers
+          // blive gemt som 2026001 og bryde nummerudledningen.
+          invoiceNr: String(i.invoiceNr || ''),
+          date: i.date || '', amount: Number(i.amount) || 0,
+          status: i.status || 'udestaaende',
+          driveFileId: i.driveFileId || '', driveUrl: i.driveUrl || '',
+          archiveKey: '',
+          createdAt: i.createdAt || new Date().toISOString(),
+          paidAt: i.paidAt || ''
+        });
+        tal.invoices++;
+      }
+
+      // Afstands-cachen er ren besparelse: hver rute koster et Maps-kald, og de
+      // er allerede betalt én gang i prototypen.
+      for (const k of (d.distanceCache || [])) {
+        if (!k || !k.key) continue;
+        this.#erstat('distance_cache', {
+          key: String(k.key), origin: k.origin || '', destination: k.destination || '',
+          km: Number(k.km) || 0, cachedAt: k.cachedAt || new Date().toISOString()
+        });
+        tal.distanceCache++;
+      }
+
+      for (const [navn, hoejest] of Object.entries(maks)) {
+        this.db.run(
+          `INSERT INTO counters (name, next) VALUES (?, ?)
+             ON CONFLICT(name) DO UPDATE SET next = max(next, excluded.next)`,
+          navn, hoejest);
+      }
+    });
+
+    return { ok: true, importeret: tal, taellere: maks };
+  }
+
+  /**
+   * INSERT OR REPLACE fra et camelCase-objekt.
+   *
+   * Db.insert kan kun almindelig INSERT, og en import skal kunne køres om.
+   * Kolonnenavne udledes af nøglerne, præcis som i Db.insert, så kaldere ikke
+   * skal skrive kolonnelisten to gange.
+   */
+  #erstat(tabel, obj) {
+    const snake = {};
+    for (const [k, v] of Object.entries(obj)) {
+      snake[k.replace(/[A-Z]/g, c => '_' + c.toLowerCase())] = v;
+    }
+    const kolonner = Object.keys(snake);
+    this.db.run(
+      'INSERT OR REPLACE INTO ' + tabel + ' (' + kolonner.join(', ') + ') VALUES (' +
+      kolonner.map(() => '?').join(', ') + ')',
+      ...kolonner.map(k => snake[k]));
+  }
+
+  /**
    * Rydder ALT i objektet. Kaldes ved permanent sletning af et band.
    *
    * deleteAll() fjerner både SQL-tabeller og nøgle/værdi-lageret. Et Durable

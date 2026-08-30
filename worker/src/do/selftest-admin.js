@@ -132,6 +132,103 @@ export async function adminChecks(ydreEnv, ok) {
   ok('bandHealth: virker stadig med targetBandId', helbred2.ok === true,
      helbred2.error);
 
+  // ── Import fra prototypen ────────────────────────────────────────────────
+  // Eget band. Kørte importen mod A, ville prototypens `m1` overskrive den
+  // admin registerTenant lige har oprettet dér — netop den kollision værnet
+  // nedenfor findes for. Testen skal afprøve importen, ikke demonstrere den.
+  const IMP = 'selftest-import';
+  try { await bandStub(env, IMP).wipe(); } catch (e) {}
+  await master.deleteBand(IMP, 'selftest', 'oprydning');
+  const nyImp = await kald('registerTenant', { bandId: IMP, bandName: 'Import-band' }, opCreds);
+  ok('import: tomt band oprettet til importen', nyImp.ok === true, nyImp.error);
+
+  const PROTO = {
+    Members: [
+      { id: 'm1', name: 'Jesper', email: 'JESPER@Dmdt.dk', role: 'admin',
+        phone: '60 24 60 60', cpr: '010190-1234', passwordHash: 'gammel-hash' },
+      { id: 'm2', name: 'Henning', email: 'henning@dmdt.dk', role: 'member' }
+    ],
+    Contracts: [
+      { id: 'c12', type: 'Spillested', status: 'godkendt', date: '2026-06-13T00:00:00.000Z',
+        honorar: 35000, venue: '{"name":"Vaerket"}', arrangoer: '{"name":"Vaerket Vejle"}' }
+    ],
+    Attendances: [
+      { id: 'a7_0', contractId: 'c12', memberId: 'm1', share: 17500, status: 'confirmed' }
+    ],
+    Invoices: [
+      { id: 'inv5', contractId: 'c12', invoiceNr: '2026-004', date: '2026-06-20',
+        amount: 35000, status: 'betalt', driveFileId: 'gammelDrive1' }
+    ],
+    DistanceCache: [
+      { key: 'oksboel|vejle', origin: 'Oksboel', destination: 'Vejle', km: 92 }
+    ]
+  };
+
+  const imp = await kald('importBandData', { bandId: IMP, data: PROTO }, opCreds);
+  ok('import: skriver alle fem tabeller', imp.ok === true &&
+     imp.importeret.members === 2 && imp.importeret.contracts === 1 &&
+     imp.importeret.attendances === 1 && imp.importeret.invoices === 1 &&
+     imp.importeret.distanceCache === 1,
+     imp.error || JSON.stringify(imp.importeret));
+
+  ok('import: udleverer en startkode pr. medlem',
+     Array.isArray(imp.startkoder) && imp.startkoder.length === 2 &&
+     imp.startkoder.every(k => k.startkode && k.startkode.length >= 12),
+     (imp.startkoder || []).length + ' koder');
+
+  // Prototypens hash er en anden generation og må ALDRIG overleve importen.
+  const impBand = bandStub(env, IMP);
+  const m1 = await impBand.findMemberById('m1');
+  ok('import: prototypens gamle hash er væk',
+     m1 && m1.passwordHash !== 'gammel-hash' && /^pbkdf2\$/.test(String(m1.passwordHash)),
+     m1 ? String(m1.passwordHash).slice(0, 12) : 'medlem mangler');
+  ok('import: tvinger kodeskift ved første login',
+     m1 && Number(m1.forcePasswordChange) === 1);
+  ok('import: e-mail normaliseres til små bogstaver',
+     m1 && m1.email === 'jesper@dmdt.dk', m1 ? m1.email : '-');
+
+  // CPR pr. medlem findes ikke i den nye model og må ikke smugles ind.
+  ok('import: CPR fra prototypen skrives INGEN steder',
+     !JSON.stringify(await impBand.exportAll()).includes('010190'));
+
+  // Tællerne skal forbi de importerede id-numre, ellers uddeler næste
+  // kontraktoprettelse c1..c12 igen og overskriver importerede rækker.
+  ok('import: løfter tællerne forbi importerede id-numre',
+     imp.taellere && imp.taellere.contract >= 12 && imp.taellere.invoice >= 5,
+     JSON.stringify(imp.taellere));
+
+  const nyKontrakt = await impBand.saveContract(
+    { type: 'Spillested', date: '2026-09-01', honorar: 1000 }, []);
+  ok('import: næste nye kontrakt kolliderer ikke med en importeret',
+     nyKontrakt.ok === true && nyKontrakt.id !== 'c12',
+     nyKontrakt.id || nyKontrakt.error);
+
+  // Samme fil igen må ikke duplikere. Kræver overskriv: true, fordi bandet nu
+  // HAR medlemmer — og det er netop scenariet flaget findes til: en import der
+  // fejlede halvvejs skal kunne køres om.
+  const imp2 = await kald('importBandData',
+    { bandId: IMP, data: PROTO, overskriv: true }, opCreds);
+  const efter = await impBand.exportAll();
+  ok('import: er idempotent — samme fil to gange giver ikke dubletter',
+     imp2.ok === true &&
+     efter.contracts.filter(c => c.id === 'c12').length === 1 &&
+     efter.invoices.filter(i => i.id === 'inv5').length === 1,
+     efter.contracts.length + ' kontrakter, ' + efter.invoices.length + ' fakturaer');
+
+  // Fakturanummeret udledes af rækkerne, så et importeret 2026-004 skal
+  // reserveres og ikke uddeles igen.
+  const nyFaktura = await impBand.createInvoice(nyKontrakt.id);
+  ok('import: nyt fakturanummer genbruger ikke et importeret',
+     nyFaktura.ok === true && nyFaktura.invoice.invoiceNr !== '2026-004',
+     nyFaktura.ok ? nyFaktura.invoice.invoiceNr : nyFaktura.error);
+
+  // Værnet: A har allerede en admin på m1. En import dertil ville overskrive
+  // vedkommende, og det skal kræve et bevidst valg.
+  const vaernet = await kald('importBandData', { bandId: A, data: PROTO }, opCreds);
+  ok('import: afviser et band der allerede har medlemmer',
+     vaernet.ok === false && /allerede/.test(String(vaernet.error || '')),
+     vaernet.error);
+
   const backupFe = await kald('backupBand', { bandId: A }, opCreds);
   ok('backupBand: virker med frontendens parameternavn (bandId)',
      backupFe.ok === true && backupFe.bandId === A, backupFe.error);
