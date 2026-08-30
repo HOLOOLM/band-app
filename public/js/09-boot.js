@@ -791,6 +791,8 @@ function opRenderEditor(){
           ${opColorField('Rammer/streger','borderColor','#313840',true)}
           ${opColorField('Sekundær tekst','textColorDim','#BCC2C8',true)}
           ${opColorField('Dæmpet tekst','textColorMute','#7E868E',true)}
+          ${opColorField('Accent — lys','primaryColorSoft','#A8A8A8',true)}
+          ${opColorField('Accent — mørk','primaryColorDeep','#5C5C5C',true)}
         </div>
       </details>
       <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end">
@@ -933,10 +935,12 @@ async function opBackup(){
   finally { if (btn){ btn.disabled = false; btn.textContent = 'Lav backup nu'; } }
 }
 
-function opPreviewColor(hex){
+function opPreviewColor(hex, soft, deep){
   document.documentElement.style.setProperty('--accent', hex);
-  document.documentElement.style.setProperty('--accent-soft', _hexLighten(hex, 22));
-  document.documentElement.style.setProperty('--accent-deep', _hexDarken(hex, 22));
+  document.documentElement.style.setProperty('--accent-soft',
+    _isHex(soft) ? soft : _hexLighten(hex, 22));
+  document.documentElement.style.setProperty('--accent-deep',
+    _isHex(deep) ? deep : _hexDarken(hex, 22));
 }
 
 // Farvefelt: synkroniseret color-swatch + HEX-tekstfelt. allowEmpty = må stå tomt (= følg tema).
@@ -945,8 +949,8 @@ function opColorField(label, key, fallback, allowEmpty){
   const sw = (v && _isHex(v)) ? v : (fallback || '#888888');
   return `<div class="field" style="min-width:148px"><label>${label}</label>
     <div style="display:flex;gap:6px;align-items:center">
-      <input type="color" value="${sw}" oninput="opSyncColor('${key}',this.value)" style="width:38px;height:38px;padding:3px;flex:none;background:var(--field-bg);border:1px solid var(--ink-line);border-radius:var(--radius)">
-      <input class="input mono" data-cfg="${key}" id="op_hex_${key}" value="${escapeHtml(v)}" placeholder="${allowEmpty ? 'Auto (tema)' : escapeHtml(fallback||'')}" oninput="opPreviewAppearance()" style="text-transform:uppercase;min-width:96px">
+      <input type="color" id="op_sw_${key}" value="${sw}" oninput="opSyncColor('${key}',this.value)" style="width:38px;height:38px;padding:3px;flex:none;background:var(--field-bg);border:1px solid var(--ink-line);border-radius:var(--radius)">
+      <input class="input mono" data-cfg="${key}" id="op_hex_${key}" value="${escapeHtml(v)}" placeholder="${allowEmpty ? 'Auto (tema)' : escapeHtml(fallback||'')}" oninput="opHexTyped('${key}',this.value)" style="text-transform:uppercase;min-width:96px">
     </div></div>`;
 }
 
@@ -962,10 +966,33 @@ function opSyncColor(key, val){
   opPreviewAppearance();
 }
 
+/**
+ * HEX tastet eller indsat → opdatér farveprøven → preview.
+ *
+ * Synkroniseringen var envejs: farveprøven skrev til tekstfeltet, men ikke
+ * omvendt. Indsatte man en palette som tekst — den normale måde at flytte et
+ * bands farver over på — blev prøverne stående på de gamle farver, og det så
+ * ud som om værdien ikke var taget imod. Kun preview'et afslørede at den var.
+ *
+ * Ugyldig eller tom værdi lader prøven stå: den har ingen meningsfuld farve at
+ * vise, og at nulstille den til sort ville se ud som et valg brugeren har taget.
+ */
+function opHexTyped(key, val){
+  const sw = document.getElementById('op_sw_' + key);
+  if (sw && _isHex(val)) sw.value = String(val).toLowerCase();
+  opPreviewAppearance();
+}
+
 // HEX-felter i udseende-formularen (ud over accent, som håndteres separat).
 // Skal matche APPEARANCE_COLOR_KEYS i Code.gs og _applyAppearanceOverrides.
 const OP_APPEARANCE_HEX = ['bgColor', 'bgColorCard', 'bgColorRaised', 'borderColor',
-                           'textColor', 'textColorDim', 'textColorMute'];
+                           'textColor', 'textColorDim', 'textColorMute',
+                           // Accentens to nuancer. De udledes som accent ±22%, men
+                           // _hexDarken trækker fra hver kanal og dæmper dermed
+                           // mætningen: en varm amber #E8A867 bliver til #b58350,
+                           // hvor den håndplukkede er #C68642. Forskellen ses på
+                           // hover- og tryk-tilstande, så farven skal kunne sættes.
+                           'primaryColorSoft', 'primaryColorDeep'];
 
 // Live-preview af HELE udseendet: tema + HEX-overrides + accent + fonte.
 function opPreviewAppearance(){
@@ -974,7 +1001,8 @@ function opPreviewAppearance(){
   const o = { fontUi:g('fontUi'), fontDisplay:g('fontDisplay') };
   OP_APPEARANCE_HEX.forEach(k => { o[k] = g(k); });
   _applyAppearanceOverrides(o);
-  opPreviewColor(g('primaryColor') || '#8A8A8A');
+  opPreviewColor(g('primaryColor') || '#8A8A8A',
+                 g('primaryColorSoft'), g('primaryColorDeep'));
 }
 
 // Nulstil til operatør-stilen (neutralt tema + gylden accent) uden for editoren.
@@ -1005,14 +1033,22 @@ async function opWrite(changes, okMsg){
 async function opSaveAppearance(btn){
   const g = k => { const el = opRoot().querySelector('[data-cfg="'+k+'"]'); return el ? el.value.trim() : ''; };
   const accent = g('primaryColor') || '#8A8A8A';
+  // Tomt nuancefelt = udled som hidtil. Sat felt vinder. Værdien SKRIVES altid
+  // (aldrig tom), fordi applyBranding falder tilbage til udledningen ved tom
+  // værdi — så et gemt tomt felt og en udledt værdi giver samme resultat.
   const changes = {
     theme: g('theme'),
-    primaryColor: accent, primaryColorSoft: _hexLighten(accent, 22), primaryColorDeep: _hexDarken(accent, 22),
+    primaryColor: accent,
+    primaryColorSoft: g('primaryColorSoft') || _hexLighten(accent, 22),
+    primaryColorDeep: g('primaryColorDeep') || _hexDarken(accent, 22),
     fontUi: g('fontUi'), fontDisplay: g('fontDisplay')
   };
   for (const k of OP_APPEARANCE_HEX){
     const v = g(k);
     if (v && !_isHex(v)){ toast(k + ' skal være #RRGGBB (eller tom)', 'err'); return; }
+    // Accentnuancerne er allerede sat ovenfor med udledning som reserve. Uden
+    // dette ville løkken skrive dem tomme igen når felterne står tomme.
+    if (k === 'primaryColorSoft' || k === 'primaryColorDeep') continue;
     changes[k] = v;
   }
   await withBusy(btn, 'Gemmer…', () => opWrite(changes, 'Udseende gemt — bandet ser det ved næste login'));

@@ -202,6 +202,31 @@ parameternavne. Alle rettet 27/8; revisionen er ren.
 fra dagen, og grunden til at dette værktøj skal køres frem for at man stoler på
 grønne tjek.
 
+## Udseende: ti HEX-felter, ikke otte (29/8)
+
+`primaryColorSoft` og `primaryColorDeep` blev gemt af begge editorer, men havde
+**intet felt nogen steder** — de blev altid udledt som accent ±22 %. For DMDT's
+amber `#E8A867` giver det:
+
+| | Udledt | Prototypen |
+|---|---|---|
+| soft | `#edbb88` | `#F0BE8A` — praktisk talt ens |
+| deep | `#b58350` | `#C68642` — mærkbart mattere |
+
+`_hexDarken` trækker en procentdel fra hver kanal og dæmper dermed mætningen,
+så en håndplukket varm mørk-amber kan ikke udledes. Begge har nu felter under
+Finjustér nuancer. Tomt felt = udled som hidtil.
+
+**Farveprøvernes synkronisering var envejs.** Vælger man i prøven, skrives HEX i
+tekstfeltet — men taster eller INDSÆTTER man HEX, blev prøven stående på den
+gamle farve. Det er netop den vej man går når et bands palette flyttes over, og
+det så ud som om værdien ikke blev taget imod. Nu går synkroniseringen begge
+veje (`opHexTyped`).
+
+Verificeret lokalt end-to-end: alle ti DMDT-farver gemt, genindlæst og
+kontrolleret mod de beregnede CSS-variabler — `--accent-deep` står på `#C68642`
+og ikke den udledte `#b58350`.
+
 ## Operatør-panelet kunne ikke redigere sine egne bands (29/8)
 
 Operatøren er ikke medlem af noget band og har derfor ingen medlems-session.
