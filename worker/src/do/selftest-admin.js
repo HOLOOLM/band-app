@@ -427,6 +427,39 @@ export async function adminChecks(ydreEnv, ok) {
      typeof health.health.euJurisdiktion === 'boolean',
      String(health.health.euJurisdiktion));
 
+  // Tjekkene herunder læser med OPERATØR-PANELETS feltnavne, ikke med DO'ens
+  // egne. Tjekkene ovenfor er grønne på `medlemmer` og har derfor aldrig
+  // opdaget at 09-boot.js:298 læser `members` — kortet skrev `undefined
+  // medlemmer`, og hvert opsætnings-badge viste "mangler" for alle bands.
+  // Et grønt tjek beviser kun det det faktisk kigger på.
+  const hp = health.health;
+  ok('bandHealth: leverer panelets `members` (ikke kun `medlemmer`)',
+     typeof hp.members === 'number' && hp.members === hp.medlemmer,
+     JSON.stringify({ members: hp.members, medlemmer: hp.medlemmer }));
+  ok('bandHealth: leverer panelets `nextGig`',
+     typeof hp.nextGig === 'string' && hp.nextGig === hp.naesteGig,
+     JSON.stringify({ nextGig: hp.nextGig, naesteGig: hp.naesteGig }));
+  ok('bandHealth: leverer opsætnings-flagene panelet tegner badges ud fra',
+     typeof hp.hasLogo === 'boolean' && typeof hp.hasRider === 'boolean' &&
+     typeof hp.hasBank === 'boolean' && typeof hp.hasCpr === 'boolean',
+     JSON.stringify({ hasLogo: hp.hasLogo, hasRider: hp.hasRider,
+                      hasBank: hp.hasBank, hasCpr: hp.hasCpr }));
+  // Rider-asset'et blev slettet lige ovenfor (:411), og bandet har ingen
+  // riderText. hasRider skal derfor være FALSK — og præcis lige så falsk som
+  // getRider er fejlende. Kobles de to ikke sammen, kan badge'et og den
+  // faktiske rider skride fra hinanden uden at nogen opdager det.
+  ok('bandHealth: hasRider følger getRider — begge nej når der ingen rider er',
+     hp.hasRider === false && (await kaldA('getRider', {})).ok === false,
+     'hasRider=' + hp.hasRider);
+  // hasBank er sand her, fordi bankKto blev sat ved faktureringstjekket (:351).
+  ok('bandHealth: hasBank er sand når bankKto er udfyldt',
+     hp.hasBank === true, 'bankKto blev sat til 1465171 ved :351');
+  ok('bandHealth: leverer `warnings` som panelet læser advarsler fra',
+     !!hp.warnings && hp.warnings.noAdmin === false &&
+     typeof hp.warnings.orphanAttendances === 'number' &&
+     typeof hp.warnings.overdueInvoices === 'number',
+     JSON.stringify(hp.warnings));
+
   const migr = await kald('migrateAllBands', {}, opCreds);
   ok('migrateAllBands: alle bands er på nyeste skema',
      migr.ok === true && migr.ikkeOpdaterede.length === 0 && migr.fejlede.length === 0,

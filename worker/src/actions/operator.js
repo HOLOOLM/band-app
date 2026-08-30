@@ -409,9 +409,34 @@ export async function bandHealth(ctx) {
   const band = bandStub(env, bandId);
   const h = await band.health();
 
+  // Panelets feltnavne. BandDO.health() taler dansk internt (`medlemmer`,
+  // `naesteGig`), og selvtesten læser de navne — men 09-boot.js læser engelske.
+  // Uden denne oversættelse stod der `undefined medlemmer` på hvert kort, og
+  // ALLE opsætnings-badges viste "mangler", fordi hasLogo/hasRider/hasBank
+  // aldrig har eksisteret og derfor faldt i else-grenen (09-boot.js:303).
+  // Det så ud som om bandet manglede logo og rider; det gjorde det ikke.
+  //
+  // Revisionen fanger det ikke: audit-actions.mjs sammenligner action-navne og
+  // REQUEST-parametre, aldrig svarfelter. Samme fejlklasse, ny retning.
+  const s = await band.getSettings();
+  const antalAssets = k => Number((h.assets || {})[k] || 0);
+
   return {
     ok: true,
     health: Object.assign({}, h, {
+      members: h.medlemmer,
+      nextGig: h.naesteGig,
+      hasLogo: antalAssets('logo') > 0,
+      // Samme betingelse som getRider (settings.js:205) lykkes under: en
+      // uploadet PDF ELLER en rider-tekst. Kræver vi PDF'en, ville et band der
+      // bruger tekst-rideren stå som mangelfuldt.
+      hasRider: antalAssets('rider') > 0 || String(s.riderText || '').trim() !== '',
+      hasBank: String(s.bankKto || '').trim() !== '',
+      warnings: {
+        noAdmin: Number(h.admins || 0) === 0,
+        orphanAttendances: Number(h.forældreløseDeltagere || 0),
+        overdueInvoices: Number(h.forfaldneFakturaer || 0)
+      },
       bandId,
       name: bandRow.name,
       status: bandRow.status,
