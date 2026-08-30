@@ -35,7 +35,8 @@ import {
   operatorLogin, listTenants, registerTenant, updateTenant, setTenantStatus,
   bandHealth, getAuditLog, backupBand, migrateAllBands, deleteTenant,
   operatorChangePassword, adminResetMemberPassword, runRetentionNow,
-  operatorListMembers, operatorSetMemberRole
+  operatorListMembers, operatorSetMemberRole,
+  listBandBackups, getBandBackup, runBackupNow
 } from './operator.js';
 import {
   getAllJobs, getAllHonorar, getFeedUrl, rotateFeedToken
@@ -151,6 +152,12 @@ export const ACTIONS = {
   // rollen kunne flyttes UDEN at nogen logger ind som pladsholderen.
   operatorListMembers:      { scope: 'master', auth: 'operator', fn: operatorListMembers },
   operatorSetMemberRole:    { scope: 'master', auth: 'operator', fn: operatorSetMemberRole },
+  // Ugentlig sikkerhedskopi i R2. Ligger ved siden af PITR, ikke i stedet
+  // for: PITR er minutpræcis men lever inde i objektet og dør med det,
+  // mens kopien overlever en sletning og kan hentes ned som fil.
+  listBandBackups:          { scope: 'master', auth: 'operator', fn: listBandBackups },
+  getBandBackup:            { scope: 'master', auth: 'operator', fn: getBandBackup },
+  runBackupNow:             { scope: 'master', auth: 'operator', fn: runBackupNow },
   // adminDeleteBand er FJERNET 30/8. Den lod bandets EGEN admin slette hele
   // bandet permanent — database, fakturaarkiv og faktureringsoplysninger — med
   // en prompt() som eneste værn. Rollen "admin" i et band er typisk et menigt

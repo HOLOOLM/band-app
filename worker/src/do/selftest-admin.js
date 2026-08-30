@@ -631,6 +631,51 @@ export async function adminChecks(ydreEnv, ok) {
   ok('deleteTenant: bandet står stadig i registret efter admins forsøg',
      (await master.getBand(A)) !== null);
 
+  // ── Ugentlig sikkerhedskopi ─────────────────────────────────────────────
+  // Tages FØR B slettes nedenfor, så vi bagefter kan bevise at kopien
+  // overlever sletningen. Det er hele grunden til at den ikke ligger under
+  // bandets egen mappe.
+  const bkKoer = await kald('runBackupNow', { bandId: B }, opCreds);
+  ok('runBackupNow: tager en kopi af bandet',
+     bkKoer.ok === true && bkKoer.kopieret.length === 1 &&
+     bkKoer.kopieret[0].bytes > 0,
+     bkKoer.error || JSON.stringify(bkKoer.kopieret));
+
+  const bkListe = await kald('listBandBackups', { bandId: B }, opCreds);
+  ok('listBandBackups: viser kopien med dato',
+     bkListe.ok === true && bkListe.backups.length >= 1 &&
+     /^\d{4}-\d{2}-\d{2}$/.test(bkListe.backups[0].dato),
+     bkListe.error || JSON.stringify((bkListe.backups || []).map(b => b.dato)));
+  ok('listBandBackups: oplyser opbevaringstiden',
+     bkListe.opbevaringUger === 8, String(bkListe.opbevaringUger));
+
+  const bkHent = await kald('getBandBackup', { key: bkListe.backups[0].key }, opCreds);
+  const bkData = bkHent.ok ? JSON.parse(bkHent.indhold) : null;
+  ok('getBandBackup: indholdet er bandets faktiske data',
+     bkHent.ok === true && bkData && bkData._band === B &&
+     Array.isArray(bkData.data.members),
+     bkHent.error);
+  // CPR ligger krypteret i MASTER, ikke i bandets objekt, og må derfor ikke
+  // kunne dukke op i en kopi der beskrives som CPR-fri.
+  ok('getBandBackup: kopien indeholder ikke CPR',
+     bkHent.ok === true && !bkHent.indhold.includes('010190'));
+
+  // Nøglen valideres, ikke bare bruges. Uden dette tjek kunne en manipuleret
+  // nøgle hente en faktura-PDF — et dokument MED CPR — gennem en rute der
+  // lover det modsatte.
+  //
+  // Filen lægges FØRST. Uden den ville tjekket også bestå hvis nøglen bare
+  // ikke fandtes — altså bestå af den uinteressante grund, og bevise
+  // ingenting om værnet.
+  const snydNoegle = B + '/fakturaer/2026/Faktura-2026-001-inv1.pdf';
+  await env.ARCHIVE.put(snydNoegle, 'CPR 010190-1234 i en faktura');
+  ok('backup: forudsætningen holder — filen ligger der faktisk',
+     (await env.ARCHIVE.get(snydNoegle)) !== null);
+  const bkSnyd = await kald('getBandBackup', { key: snydNoegle }, opCreds);
+  ok('getBandBackup: nægter en nøgle uden for backup-området, selv når filen findes',
+     bkSnyd.ok === false && !JSON.stringify(bkSnyd).includes('010190'),
+     bkSnyd.error);
+
   // ── deleteTenant kræver bekræftelse ─────────────────────────────────────
   const utenConfirm = await kald('deleteTenant', { targetBandId: B }, opCreds);
   ok('deleteTenant: kræver bekræftelse med band-id',
@@ -646,4 +691,34 @@ export async function adminChecks(ydreEnv, ok) {
   ok('deleteTenant: objektets data er ryddet',
      efterSlet.counts.members === 0 && efterSlet.counts.contracts === 0,
      JSON.stringify(efterSlet.counts));
+
+  // ── Kopien skal overleve sletningen ─────────────────────────────────────
+  //
+  // Dette er hele begrundelsen for at kopierne ligger under `_backups/` og
+  // ikke under `<bandId>/`. Lå de sidstnævnte sted, ville deleteBandArchive
+  // netop have ryddet dem — og en backup der forsvinder sammen med
+  // originalen, er ingen backup.
+  //
+  // Fakturaarkivet SKAL derimod være væk: det indeholder CPR.
+  const efterSletListe = await kald('listBandBackups', { bandId: B }, opCreds);
+  ok('backup: kopien overlever at bandet slettes',
+     efterSletListe.ok === true && efterSletListe.backups.length >= 1,
+     efterSletListe.error || (efterSletListe.backups || []).length + ' kopier');
+  const genskab = await kald('getBandBackup',
+    { key: (efterSletListe.backups || [{}])[0].key }, opCreds);
+  ok('backup: data kan stadig læses ud af kopien efter sletningen',
+     genskab.ok === true && JSON.parse(genskab.indhold).data.members.length > 0,
+     genskab.error);
+
+  // Oprydningen fjerner gamle kopier på tværs af ALLE bands — også slettede,
+  // som aldrig får kørt deres egen gren. Plantet med en dato uden for vinduet.
+  const gammelNoegle = '_backups/' + B + '/2020-01-01.json';
+  await env.ARCHIVE.put(gammelNoegle, JSON.stringify({ _band: B, data: {} }));
+  const { pruneBackups } = await import('../services/backup.js');
+  const ryddet = await pruneBackups(env);
+  ok('backup: oprydningen sletter kopier ældre end otte uger',
+     ryddet.slettet >= 1 && (await env.ARCHIVE.get(gammelNoegle)) === null,
+     JSON.stringify(ryddet));
+  ok('backup: oprydningen beholder de nye',
+     (await kald('listBandBackups', { bandId: B }, opCreds)).backups.length >= 1);
 }

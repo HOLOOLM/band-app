@@ -16,6 +16,8 @@ import { BAND_SCHEMA_VERSION } from '../do/schema.js';
 import { genTempPassword } from './members.js';
 import { registerIdentity } from '../auth/identity.js';
 import { sendMail } from '../services/mail.js';
+import { backupConfigured, putBackup, listBackups, getBackup, pruneBackups,
+         OPBEVARING_UGER } from '../services/backup.js';
 
 const OPERATOR_TOKEN_TTL_SEC = 8 * 60 * 60;
 const LOGIN_MAX_ATTEMPTS = 5;
@@ -267,6 +269,89 @@ export async function operatorSetMemberRole(ctx) {
     maal.email + ': ' + maal.role + ' → ' + rolle);
 
   return { ok: true, member: { id: maal.id, email: maal.email, role: rolle } };
+}
+
+/**
+ * listBandBackups — de ugentlige kopier for ét band.
+ *
+ * Bandet behøver ikke findes længere. Det er selve pointen: kopierne ligger
+ * uden for bandets mappe, netop så en fejlagtig sletning kan fortrydes, og en
+ * liste der kun virkede for eksisterende bands ville spilde den mulighed.
+ */
+export async function listBandBackups(ctx) {
+  const { env, p } = ctx;
+  const bandId = String(p.bandId || p.targetBandId || '').trim();
+  if (!bandId) return { ok: false, error: 'bandId mangler' };
+  if (!backupConfigured(env)) {
+    return { ok: false, error: 'R2-arkivet er ikke sat op (bindingen ARCHIVE mangler)' };
+  }
+  return {
+    ok: true,
+    bandId,
+    opbevaringUger: OPBEVARING_UGER,
+    backups: await listBackups(env, bandId)
+  };
+}
+
+/**
+ * getBandBackup — henter én kopi, så den kan gemmes som fil.
+ *
+ * Nøglen kommer fra listen ovenfor, men valideres alligevel i getBackup: uden
+ * det tjek kunne en manipuleret nøgle hente en faktura-PDF — et dokument MED
+ * CPR — gennem en rute der lover at levere en CPR-fri kopi.
+ */
+export async function getBandBackup(ctx) {
+  const { env, p, operator } = ctx;
+  const key = String(p.key || '').trim();
+  if (!key) return { ok: false, error: 'key mangler' };
+  if (!backupConfigured(env)) {
+    return { ok: false, error: 'R2-arkivet er ikke sat op' };
+  }
+  const tekst = await getBackup(env, key);
+  if (tekst === null) return { ok: false, error: 'Kopien findes ikke' };
+
+  await masterStub(env).audit(operator.email, 'backup-hentet', '', key);
+  return { ok: true, key, indhold: tekst };
+}
+
+/**
+ * runBackupNow — tager kopien med det samme i stedet for at vente til søndag.
+ *
+ * Findes af samme grund som runRetentionNow: en ugentlig kørsel man aldrig har
+ * set virke, er en antagelse. Den rydder også op, så hele søndagsarbejdet kan
+ * afprøves i ét kald.
+ */
+export async function runBackupNow(ctx) {
+  const { env, p, operator } = ctx;
+  if (!backupConfigured(env)) {
+    return { ok: false, error: 'R2-arkivet er ikke sat op' };
+  }
+  const master = masterStub(env);
+  // Ét band, hvis der er sendt et — ellers alle.
+  const enkelt = String(p.bandId || p.targetBandId || '').trim();
+  const bands = enkelt ? [{ bandId: enkelt }] : await master.listBands();
+
+  const dato = new Date().toISOString().slice(0, 10);
+  const ok = [];
+  const fejl = [];
+  for (const b of bands) {
+    try {
+      const dump = await bandStub(env, b.bandId).exportAll();
+      const r = await putBackup(env, b.bandId, dato, dump);
+      ok.push({ bandId: b.bandId, bytes: r.bytes });
+    } catch (e) {
+      fejl.push({ bandId: b.bandId, error: String(e && e.message || e) });
+    }
+  }
+
+  let ryddet = null;
+  try { ryddet = await pruneBackups(env); } catch (e) {
+    console.error('Backup-oprydning fejlede: ' + (e && e.message || e));
+  }
+
+  await master.audit(operator.email, 'backup-koert', enkelt,
+    ok.length + ' kopieret, ' + fejl.length + ' fejlede');
+  return { ok: true, dato, kopieret: ok, fejlede: fejl, ryddet };
 }
 
 /**

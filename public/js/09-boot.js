@@ -879,14 +879,18 @@ function opRenderEditor(){
     </div>
 
     <div class="card" style="margin-top:16px">
-      <h3 class="serif" style="margin:0 0 6px;font-size:16px">Backup & data</h3>
-      <p style="color:var(--cream-mute);font-size:12px;margin:0 0 12px">Lav en komplet kopi af bandets Sheet i <span class="mono">Band-app/${escapeHtml(c._bandId)}/Backups/</span> i din Drive.</p>
-      <button class="btn btn-ghost btn-sm" id="opBackupBtn" onclick="opBackup()">Lav backup nu</button>
+      <h3 class="serif" style="margin:0 0 6px;font-size:16px">Sikkerhedskopier</h3>
+      <p style="color:var(--cream-mute);font-size:12px;margin:0 0 12px">Der tages automatisk en kopi <strong>hver søndag</strong>, og de gemmes i otte uger. Kopierne ligger uden for bandets egen mappe, så de også overlever hvis bandet slettes.<br>Derudover kan bandets database gendannes minut for minut 30 dage tilbage — det sker inde i Cloudflare og kræver ingen kopi.</p>
+      <div id="opBackupList" style="margin-bottom:10px"><span class="spinner" style="width:12px;height:12px"></span> Henter kopier…</div>
+      <div class="flex" style="gap:8px">
+        <button class="btn btn-ghost btn-sm" id="opBackupBtn" onclick="opBackup()">Tag kopi nu</button>
+      </div>
     </div>`);
   // Vis bandets faktiske udseende (tema + HEX-overrides + font) live mens man redigerer.
   opPreviewAppearance();
   opLoadFeed();
   opLoadMembers();
+  opLoadBackups();
 }
 
 let OP_FEED_URL = '';
@@ -997,17 +1001,71 @@ async function opRotateFeed(){
   } catch(e){ toast('Netværksfejl: '+e.message, 'err'); }
 }
 
+// FØR: kaldte backupBand og åbnede d.url. Den URL var Drive-mappen fra Apps
+// Script-tiden og har ikke eksisteret siden migreringen, så knappen sagde
+// "Backup oprettet" og gjorde ingenting synligt. Nu skriver den en rigtig kopi
+// til R2 — samme kald som søndagens cron — og genindlæser listen.
 async function opBackup(){
   const btn = document.getElementById('opBackupBtn');
-  if (btn){ btn.disabled = true; btn.textContent = 'Laver backup…'; }
+  if (btn){ btn.disabled = true; btn.textContent = 'Tager kopi…'; }
   try {
-    const d = await _apiCall('backupBand', { bandId: OP_CFG._bandId });
+    const d = await _apiCall('runBackupNow', { bandId: OP_CFG._bandId });
     if (d && d.ok){
-      toast('Backup oprettet');
-      if (d.url) window.open(d.url, '_blank');
-    } else toast((d&&d.error)||'Backup fejlede', 'err');
+      const b = (d.kopieret || [])[0];
+      toast(b ? ('Kopi taget — ' + Math.round(b.bytes / 1024) + ' kB') : 'Kopi taget');
+      await opLoadBackups();
+    } else toast((d&&d.error)||'Kopien fejlede', 'err');
   } catch(e){ toast('Netværksfejl: '+e.message, 'err'); }
-  finally { if (btn){ btn.disabled = false; btn.textContent = 'Lav backup nu'; } }
+  finally { if (btn){ btn.disabled = false; btn.textContent = 'Tag kopi nu'; } }
+}
+
+async function opLoadBackups(){
+  const box = document.getElementById('opBackupList');
+  if (!box) return;
+  try {
+    const d = await _apiCall('listBandBackups', { bandId: OP_CFG._bandId });
+    if (!d || !d.ok){
+      box.innerHTML = '<span style="color:var(--danger);font-size:12px">' +
+        escapeHtml((d && d.error) || 'Kunne ikke hente kopier') + '</span>';
+      return;
+    }
+    const liste = d.backups || [];
+    if (!liste.length){
+      box.innerHTML = '<span style="color:var(--cream-mute);font-size:12px">Ingen kopier endnu. Første tages næste søndag.</span>';
+      return;
+    }
+    box.innerHTML = liste.map(b =>
+      '<div style="display:flex;gap:10px;align-items:center;padding:5px 0;border-bottom:1px solid var(--ink-line-soft)">' +
+      '<span style="flex:1;font-size:13px" class="mono">' + escapeHtml(b.dato) + '</span>' +
+      '<span style="color:var(--cream-mute);font-size:12px">' + Math.round(b.bytes / 1024) + ' kB</span>' +
+      '<button class="btn btn-ghost btn-sm" data-backup-key="' + escapeHtml(b.key) + '">Hent</button>' +
+      '</div>').join('');
+    box.querySelectorAll('[data-backup-key]').forEach(k => {
+      k.onclick = () => opHentBackup(k, k.getAttribute('data-backup-key'));
+    });
+  } catch(e){
+    box.innerHTML = '<span style="color:var(--danger);font-size:12px">Netværksfejl: ' +
+      escapeHtml(e.message) + '</span>';
+  }
+}
+
+// Filen dannes i browseren frem for at hentes fra en URL. Kopien indeholder
+// persondata, og en delbar URL ville være et link enhver med adressen kunne
+// bruge — indholdet skal gennem operatørens egen session.
+async function opHentBackup(btn, key){
+  await withBusy(btn, 'Henter…', async () => {
+    try {
+      const d = await _apiCall('getBandBackup', { key: key });
+      if (!d || !d.ok){ toast((d&&d.error)||'Kunne ikke hente kopien', 'err'); return; }
+      const blob = new Blob([d.indhold], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = (key.split('/').slice(-2).join('-') || 'backup.json');
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    } catch(e){ toast('Netværksfejl: '+e.message, 'err'); }
+  });
 }
 
 function opPreviewColor(hex, soft, deep){

@@ -13,7 +13,7 @@ autoritativ på *hvor vi er*.
 | | |
 |---|---|
 | Alle faser (1–6) | **Kodet, testet og deployet** |
-| Selvtest | **480 tjek, alle grønne**, verificeret idempotent over gentagne kørsler |
+| Selvtest | **501 tjek, alle grønne**, verificeret idempotent over gentagne kørsler |
 | Kontraktrevision | **Ren** — `node worker/tools/audit-actions.mjs` |
 | Ny Worker-kode | ~10.700 linjer i 46 moduler, 78 actions |
 | `Code.gs` → sidecar | 4.762 → 219 linjer (`apps-script/Sidecar.gs`) |
@@ -330,6 +330,47 @@ Tre tjek dækker begge veje tilbage — at navnet genopstår i tabellen, og at
 
 Verificeret i UI'et: Farezonen, knappen og funktionen er alle væk, og
 operatørens egen sletning virker uændret.
+
+## Backup: to mekanismer, hver med sin blinde vinkel (30/8)
+
+**Point-in-time recovery.** Slået til som standard på alle SQLite-baserede
+Durable Objects. Gendanner til et vilkårligt tidspunkt 30 dage tilbage, og en
+gendannelse kan FORTRYDES: `onNextSessionRestoreBookmark()` returnerer et
+bogmærke for tidspunktet lige før. Blind vinkel: den lever inde i objektet.
+Slettes bandet, forsvinder historikken med.
+
+**Ugentlig kopi i R2**, ny 30/8. Cron'en tager om søndagen en `exportAll()` pr.
+band og lægger den under `_backups/<bandId>/<dato>.json`. Otte ugers
+opbevaring. Blinde vinkler: op til en uges tab, og **kopien indeholder ingen
+password-hashes** — `exportAll()` udelader dem. Gendanner man fra en kopi, skal
+alle medlemmer have nye koder.
+
+**Præfikset er en beslutning, ikke en detalje.** Kopierne ligger UDEN FOR
+bandets egen mappe, fordi `deleteBandArchive` rydder `<bandId>/` ved sletning —
+lå de dér, ville de forsvinde præcis når man fik brug for dem. Et band-id
+matcher `^[a-z0-9-]{2,40}$` og kan ikke indeholde underscore, så `_backups/`
+kan aldrig kollidere. Prisen er at persondata lever op til otte uger efter en
+sletning; det skal kunne siges højt over for bandene.
+
+`getBandBackup` validerer at nøglen starter med `_backups/`. Uden det kunne en
+manipuleret nøgle hente en faktura-PDF — et dokument MED CPR — gennem en rute
+der lover det modsatte. Tjekket er bevist ved at LÆGGE en fil på den forbudte
+nøgle først; ellers ville det bestå af den uinteressante grund at filen ikke
+fandtes.
+
+**Endnu ikke bygget:** en gendannelses-action til PITR. Dataene kan reddes, men
+der findes ingen kode der gør det — `onNextSessionRestoreBookmark` optræder
+ingen steder. Skal skrives FØR den skal bruges, ikke under tidspres.
+
+## Operatør-panelet: nyt siden 30/8
+
+- **Administratorer** under Admin-adgang: medlemsliste med rolle og en knap pr.
+  medlem. Den eneste admin får "eneste admin" i stedet, og backenden nægter at
+  fjerne den sidste. Findes fordi et band oprettes med en pladsholder-mail, og
+  rollen skal kunne flyttes uden at pladsholderen logger ind.
+- **Sikkerhedskopier** erstatter det gamle "Backup & data"-kort, som lovede en
+  kopi i operatørens Drive og åbnede `d.url` — en URL der ikke har eksisteret
+  siden migreringen. Knappen sagde "Backup oprettet" og gjorde ingenting.
 
 ## VIGTIGT før første rigtige CPR-nummer
 
