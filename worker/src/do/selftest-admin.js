@@ -117,6 +117,25 @@ export async function adminChecks(ydreEnv, ok) {
   const opFeed = await kald('getFeedUrl', { bandId: A }, opCreds);
   ok('operatør: kan hente bandets feed-token', opFeed.ok === true, opFeed.error);
 
+  // Kaldt med FRONTENDENS parameternavn, ikke implementeringens.
+  //
+  // bandHealth og backupBand læste kun `targetBandId`, mens operatør-panelet
+  // sender `bandId` (09-boot.js:286 og :929). Bandlisten svarede derfor
+  // "Kunne ikke hente status" for hvert eneste band. Testene fangede intet,
+  // fordi de kaldte med targetBandId — det navn implementeringen selv bruger.
+  const helbred = await kald('bandHealth', { bandId: A }, opCreds);
+  ok('bandHealth: virker med frontendens parameternavn (bandId)',
+     helbred.ok === true && helbred.health && helbred.health.bandId === A,
+     helbred.error || ('bandId: ' + (helbred.health || {}).bandId));
+
+  const helbred2 = await kald('bandHealth', { targetBandId: A }, opCreds);
+  ok('bandHealth: virker stadig med targetBandId', helbred2.ok === true,
+     helbred2.error);
+
+  const backupFe = await kald('backupBand', { bandId: A }, opCreds);
+  ok('backupBand: virker med frontendens parameternavn (bandId)',
+     backupFe.ok === true && backupFe.bandId === A, backupFe.error);
+
   // Modstykket: tilladelsen er udtrykkelig pr. action, ikke en generel nøgle.
   // Uden dette tjek kunne nogen "løse" en fremtidig gate-fejl ved at give
   // operatøren adgang til ALT, og intet ville protestere.

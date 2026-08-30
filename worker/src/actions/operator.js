@@ -396,8 +396,12 @@ export async function setTenantStatus(ctx) {
  */
 export async function bandHealth(ctx) {
   const { env, p } = ctx;
-  const bandId = String(p.targetBandId || '').trim();
-  if (!bandId) return { ok: false, error: 'targetBandId mangler' };
+  // BEGGE navne accepteres. Operatør-panelet sender `bandId` (09-boot.js:286),
+  // mens listens egne knapper sender `targetBandId`. Læste vi kun det ene,
+  // svarede bandlisten "Kunne ikke hente status" for hvert eneste band — og
+  // fejlen lignede et nedbrud i datalaget frem for et forkert parameternavn.
+  const bandId = String(p.targetBandId || p.bandId || '').trim();
+  if (!bandId) return { ok: false, error: 'bandId mangler' };
   const master = masterStub(env);
   const bandRow = await master.getBand(bandId);
   if (!bandRow) return { ok: false, error: 'Ukendt band: ' + bandId };
@@ -438,8 +442,9 @@ export async function getAuditLog(ctx) {
  * at flytte data ud af systemet, ikke til at redde det.
  */
 export async function backupBand(ctx) {
-  const bandId = String(ctx.p.targetBandId || '').trim();
-  if (!bandId) return { ok: false, error: 'targetBandId mangler' };
+  // Se bandHealth: panelet sender `bandId`.
+  const bandId = String(ctx.p.targetBandId || ctx.p.bandId || '').trim();
+  if (!bandId) return { ok: false, error: 'bandId mangler' };
   const dump = await bandStub(ctx.env, bandId).exportAll();
   return {
     ok: true,
@@ -488,8 +493,12 @@ export async function migrateAllBands(ctx) {
  */
 export async function deleteTenant(ctx) {
   const { env, p, operator } = ctx;
-  const bandId = String(p.targetBandId || '').trim();
-  if (!bandId) return { ok: false, error: 'targetBandId mangler' };
+  // Samme funktion betjener to actions: operatørens `deleteTenant` (sender
+  // targetBandId) og bandets eget `adminDeleteBand` (08-admin.js:335, hvor
+  // _apiCall injicerer bandId). Uden begge navne kunne et band ikke slette sig
+  // selv.
+  const bandId = String(p.targetBandId || p.bandId || '').trim();
+  if (!bandId) return { ok: false, error: 'bandId mangler' };
   // Kræver eksplicit bekræftelse med bandets eget id, så et fejlklik i en liste
   // ikke kan slette et band permanent.
   if (String(p.confirm || '') !== bandId) {

@@ -13,7 +13,7 @@ autoritativ på *hvor vi er*.
 | | |
 |---|---|
 | Alle faser (1–6) | **Kodet, testet og deployet** |
-| Selvtest | **452 tjek, alle grønne**, verificeret idempotent over gentagne kørsler |
+| Selvtest | **455 tjek, alle grønne**, verificeret idempotent over gentagne kørsler |
 | Kontraktrevision | **Ren** — `node worker/tools/audit-actions.mjs` |
 | Ny Worker-kode | ~10.400 linjer i 45 moduler, 76 actions |
 | `Code.gs` → sidecar | 4.762 → 219 linjer (`apps-script/Sidecar.gs`) |
@@ -202,6 +202,29 @@ parameternavne. Alle rettet 27/8; revisionen er ren.
 fra dagen, og grunden til at dette værktøj skal køres frem for at man stoler på
 grønne tjek.
 
+## "Kunne ikke hente status" — og revisionens egen blindvinkel (29/8)
+
+Bandlisten i operatør-panelet viste `Kunne ikke hente status` for hvert eneste
+band. Årsagen var den samme fejlklasse som i sidste uge: `bandHealth` og
+`backupBand` læste kun `p.targetBandId`, mens panelet sender `bandId`
+(`09-boot.js:286` og `:929`). `deleteTenant` havde samme problem fra bandets
+egen slet-knap, hvor `_apiCall` injicerer `bandId`.
+
+**Det interessante er hvorfor `audit-actions.mjs` ikke fangede det.** Værktøjet
+havde `bandId` på sin `HAANDTERET_AF_ROUTER`-liste, fordi routeren bruger navnet
+til at adressere bandets Durable Object. Det er rigtigt for `scope: 'band'` — men
+for `scope: 'master'` findes der intet band-objekt, og `bandId` er almindelig
+nyttelast som action'en selv skal læse. Undtagelsen skjulte altså præcis den
+fejl den var lavet for at fange.
+
+Revisionen har nu en tredje tjekklasse for netop det. Den er **valideret ved at
+genindføre fejlen**: med `bandHealth` rullet tilbage fejler den med exit 1, med
+rettelsen på plads passerer den. Et tjek man ikke har set fejle, beviser intet.
+
+Alle tre actions accepterer nu begge navne, og selvtesten kalder dem med
+FRONTENDENS navn — ikke implementeringens. Det var netop dét der gjorde de
+tidligere tests blinde.
+
 ## Udseende: ti HEX-felter, ikke otte (29/8)
 
 `primaryColorSoft` og `primaryColorDeep` blev gemt af begge editorer, men havde
@@ -311,6 +334,28 @@ bagefter uden at alle bands mister data. Verificeret i produktion 2026-08-27:
 `euJurisdiktion: true`.
 
 ---
+
+## En fejlet build ligner en bestået test (29/8)
+
+Dette kostede mest tid af alt i dag, og det ser ikke ud som en fejl.
+
+Fejler `wrangler dev`s build, **bliver det sidste bundt der byggede ved med at
+blive serveret**. `/api/_selftest` svarer derfor stadig `ok: true` — bare med
+færre tjek, fordi det er en ældre udgave af koden. Man ser 20 eller 62 grønne
+tjek i stedet for 455 og tror at noget er blevet sprunget over, ikke at
+oversætteren aldrig accepterede filen.
+
+I dag var årsagerne en dobbelt `const backup` og et ødelagt strengliteral. Ingen
+af delene nåede frem som en fejl i svaret.
+
+**Tjek ALTID antallet af tjek mod det forventede.** Er det lavere, så læs
+serverloggen (`preview_logs` med `level: "error"`) før du drager nogen
+konklusion om testene. Loggen kan desuden vise en forældet fejl efter en
+rettelse — genstart serveren for at fremtvinge en ren build.
+
+Beslægtet: `Date.now()` fryses under synkron kørsel i Workers, så vægur-tid kan
+ikke måle CPU. Begge fælder har samme form — værktøjet svarer noget der ligner
+et resultat, men er det ikke.
 
 ## Faldgruber i miljøet
 

@@ -55,7 +55,8 @@ const tabel = new Map();      // action → { fn, auth, operatorOk }
 for (const m of idxSrc.matchAll(/^\s{2}([a-zA-Z]+):\s*\{([^}]*)fn:\s*([a-zA-Z]+)/gm)) {
   const krop = m[2];
   const auth = (krop.match(/auth:\s*'([a-z|]+)'/) || [])[1] || '';
-  tabel.set(m[1], { fn: m[3], auth, operatorOk: /operatorOk:\s*true/.test(krop) });
+  const scope = (krop.match(/scope:\s*'([a-z]+)'/) || [])[1] || '';
+  tabel.set(m[1], { fn: m[3], auth, scope, operatorOk: /operatorOk:\s*true/.test(krop) });
 }
 
 // Hele action-kildekoden i én streng, til parametersøgning.
@@ -92,6 +93,29 @@ const ikkeOperatoerbare = [...opKald]
     return !OPERATOER_OK.has(d.auth) && !d.operatorOk;
   })
   .sort();
+
+// ── Fejl 3: master-actions der ikke læser det bandnavn de får ─────────────
+// `bandId` stod på HAANDTERET_AF_ROUTER-listen, fordi routeren bruger den til at
+// adressere bandets Durable Object. Det er rigtigt for scope 'band' — men for
+// scope 'master' er der intet band-objekt, og `bandId` er almindelig nyttelast
+// som action'en SELV skal læse.
+//
+// Undtagelsen skjulte derfor præcis den fejl den skulle fange: bandHealth og
+// backupBand læste kun `targetBandId`, mens operatør-panelet sender `bandId`.
+// Bandlisten svarede "Kunne ikke hente status" for hvert band, og revisionen
+// meldte alt rent.
+//
+// _apiCall injicerer altid bandId, så kun kaldsteder der SKRIVER navnet
+// eksplicit tælles — det er dem hvor kalderen mener noget med det.
+const manglerBandLaesning = [];
+for (const [action, params] of frontend) {
+  const d = tabel.get(action);
+  if (!d || d.scope !== 'master') continue;
+  if (!params.has('bandId')) continue;
+  const fnKrop = (altKode.match(new RegExp('function ' + d.fn +
+    '[^]{0,600}')) || [''])[0];
+  if (!/p\.bandId/.test(fnKrop)) manglerBandLaesning.push({ action, fn: d.fn });
+}
 
 // ── Advarsel: parametre der ikke læses ─────────────────────────────────────
 // Fælles parametre som routeren håndterer, eller som injiceres server-side.
@@ -139,6 +163,17 @@ if (ikkeOperatoerbare.length) {
   }
 } else {
   console.log('OK — hver action operatør-panelet kalder kan udføres af en operatør.');
+}
+
+if (manglerBandLaesning.length) {
+  exitKode = 1;
+  console.log('\nFEJL — master-actions der får bandId, men aldrig læser det:');
+  for (const m of manglerBandLaesning) {
+    console.log('  x ' + m.action + ' (' + m.fn +
+      ') — læs p.bandId, ikke kun p.targetBandId');
+  }
+} else {
+  console.log('OK — hver master-action læser det bandnavn frontenden sender.');
 }
 
 if (uLaeste.length) {
