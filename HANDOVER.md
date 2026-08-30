@@ -380,6 +380,11 @@ band-admins, at fortryd-markøren mangler når intet er gendannet — og vigtigs
 at et forsøg uden fungerende PITR fejler RENT uden at genstarte objektet. Uden
 det sidste kunne et klik i produktion dræbe et band uden at gendanne noget.
 
+**FRAVALGT 30/8.** Jonas blev tilbudt prøven og sagde nej. Gendannelsen er
+altså bygget og gated, men ubevist, og det er et bevidst valg — ikke en
+glemt opgave. Skal den nogensinde bruges i alvor, så kør prøven FØRST på et
+engangsband; opskriften står lige her.
+
 **Sådan bevises den i produktion** (5 minutter, gør det før den skal bruges):
 opret et engangsband, lav en kontrakt, notér tidspunktet, lav en kontrakt til,
 kør `restoreBandToTime` med tidspunktet imellem, og se at kontrakt nummer to er
