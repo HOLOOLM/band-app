@@ -185,22 +185,17 @@ async function renderAdminSettings(){
         <button class="btn btn-primary" onclick="saveBillingInfo(this)">Gem faktureringsoplysninger</button>
       </div>
 
-      <div class="card" style="padding:24px">
-        <div class="eyebrow" style="margin-bottom:12px">Band-info</div>
-        <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
-          <span class="muted" style="width:100px;font-size:13px">Band-ID</span>
-          <code class="mono" style="font-size:13px">${escapeHtml(BAND_ID||'')}</code>
-        </div>
-        <div style="display:flex;gap:8px;align-items:center">
-          <span class="muted" style="width:100px;font-size:13px">Navn</span>
-          <span style="font-size:13px">${escapeHtml(_b('bandName'))}</span>
-        </div>
-      </div>
+      <!--
+        Her lå to kort, begge fjernet 30/8:
 
-      <div class="card" style="padding:24px">
-        <div class="eyebrow" style="margin-bottom:8px">Sletning af bandet</div>
-        <p class="muted" style="font-size:13px;margin:0">Et band kan kun slettes af operatøren. Kontakt din kontaktperson, hvis bandet skal lukkes ned — så sikrer vi at kontrakter og honorarafregninger er hentet ud først.</p>
-      </div>
+        "Band-info" viste band-id og bandnavn. Id'et er en teknisk nøgle
+        bandets admin aldrig skal bruge til noget — det står i URL'en for den
+        der har brug for det — og navnet stod allerede øverst på siden.
+
+        "Sletning af bandet" forklarede at kun operatøren kan slette. Da
+        knappen er væk, er beskeden kun støj: den gør opmærksom på en mulighed
+        der ikke findes i panelet.
+      -->
 
     </div>`;
 
