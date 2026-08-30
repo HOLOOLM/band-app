@@ -124,6 +124,45 @@ export async function actionChecks(ydreEnv, ok, advarsler) {
   const efterLaas = await kald('login', { email: laas, passwordHash: clientHash });
   ok('login: KORREKT kode afvises også mens kontoen er låst',
      efterLaas.ok === false && /15 minutter/.test(efterLaas.error), efterLaas.error);
+
+  // ── Låsen skal ÅBNE af sig selv, og forsøg må ikke skubbe den foran sig ──
+  //
+  // Det her er forskellen mellem "låst i et kvarter" og "låst for evigt".
+  // penalizeLogin sætter `until` til nu + 15 min ved HVERT kald. Talte et
+  // forsøg mens kontoen allerede var låst, ville hvert nyt klik nulstille
+  // uret — og en bruger der prøver igen og igen ville aldrig komme ind, uanset
+  // hvor længe de ventede. Det ville se ud som om kontoen kun kan åbnes ved en
+  // nulstilling, og det er præcis den fejl vi IKKE vil have.
+  //
+  // login() beskytter mod det ved at returnere på st.locked FØR den straffer.
+  const laastFoer = await band.loginAttemptState(laas, 5, 900);
+  for (let i = 0; i < 4; i++) {
+    await kald('login', { email: laas, passwordHash: await sha256imod(100 + i) });
+  }
+  const laastEfter = await band.loginAttemptState(laas, 5, 900);
+  ok('login: forsøg mens kontoen er låst forlænger IKKE låsen',
+     laastFoer.until === laastEfter.until && laastEfter.attempts === laastFoer.attempts,
+     'until ' + laastFoer.until + ' → ' + laastEfter.until +
+     ', forsøg ' + laastFoer.attempts + ' → ' + laastEfter.attempts);
+  ok('login: låsen har en udløbstid og er dermed midlertidig',
+     !!laastEfter.until && Date.parse(laastEfter.until) > Date.now(),
+     String(laastEfter.until));
+
+  // Og når vinduet er udløbet, giver loginAttemptState en ren tavle af sig
+  // selv — uden at nogen nulstiller noget. Simuleret ved at sætte `until` til
+  // fortiden, fordi et rigtigt kvarter ikke kan ventes af i en test.
+  await band.syncMeta({
+    ['loginlock:' + laas]:
+      JSON.stringify({ attempts: 5, until: new Date(Date.now() - 1000).toISOString() })
+  });
+  const efterUdloeb = await band.loginAttemptState(laas, 5, 900);
+  ok('login: låsen åbner af sig selv når vinduet er udløbet',
+     efterUdloeb.locked === false && efterUdloeb.attempts === 0,
+     JSON.stringify(efterUdloeb));
+  const genindMedKorrekt = await kald('login', { email: laas, passwordHash: clientHash });
+  ok('login: den rigtige kode virker igen efter udløb — ingen nulstilling nødvendig',
+     genindMedKorrekt.ok === true, genindMedKorrekt.error);
+
   await band.clearLoginAttempts(laas);
 
   // ── refreshSession ───────────────────────────────────────────────────────
