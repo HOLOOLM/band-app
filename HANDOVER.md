@@ -13,7 +13,7 @@ autoritativ på *hvor vi er*.
 | | |
 |---|---|
 | Alle faser (1–6) | **Kodet, testet og deployet** |
-| Selvtest | **473 tjek, alle grønne**, verificeret idempotent over gentagne kørsler |
+| Selvtest | **477 tjek, alle grønne**, verificeret idempotent over gentagne kørsler |
 | Kontraktrevision | **Ren** — `node worker/tools/audit-actions.mjs` |
 | Ny Worker-kode | ~10.700 linjer i 46 moduler, 78 actions |
 | `Code.gs` → sidecar | 4.762 → 219 linjer (`apps-script/Sidecar.gs`) |
@@ -22,7 +22,7 @@ autoritativ på *hvor vi er*.
 | Sidecar | Kører på det gamle Apps Script-projekt, verificeret 29/8 |
 | Operatør | Oprettet 29/8. `BOOTSTRAP_TOKEN` skal være slettet igen |
 | Bandet `dmdt` | Oprettet på det nye lag, branding + logo på plads 29/8 |
-| **NÆSTE** | **Migrér prototypens data ind — se skridt 7** |
+| **NÆSTE** | **Efterarbejde efter migreringen — se skridt 8** |
 
 Omskiftningen er sket. Google Sheet'et er urørt og kan rulles tilbage til, men
 `Code.gs` er overskrevet af sidecaren — se skridt 6 for hvad det koster.
@@ -240,6 +240,71 @@ bagefter.
 FAKTISK har Drive-arkiverede fakturaer.
 
 ---
+
+### 8. Efterarbejde — migreringen ER kørt (30/8)
+
+Skridt 7 er gennemført. Bandet `dmdt` har de 10 medlemmer, 9 kontrakter, 68
+deltagelser, 3 fakturaer og 56 cachede afstande. Startkoderne er udleveret og
+noteret. `CPR_KEY` og `MASTER_SECRET` er udskiftet og ligger nu i en password
+manager.
+
+Tilbage, i faldende vigtighed:
+
+1. **Slet eksportfilen** fra Drive OG papirkurven. Den har CPR på alle ti.
+2. **CPR og bank under Indstillinger** i `dmdt`: `bankReg` 9682, `bankKto`
+   1465171 (uden foranstillede nuller), `bankName` Sparekassen for Nr. Nebel og
+   Omegn. Gemmes CPR'et og står det efter en genindlæsning, er `CPR_KEY`
+   bevist i praksis — badge'et skifter til CPR ✓.
+3. **Fordel de 10 startkoder.** Hvert medlem tvinges til at skifte ved første
+   login og må nu vælge 6 tegn, så den gamle prototype-kode kan genbruges.
+4. **☁ Arkivér** på de tre afregninger, så de lægges i R2.
+5. **Rider-kontaktfelterne**, så `__TECH_NAME__` m.fl. falder på plads.
+
+## Hemmeligheder: dashboardet efterlader en uudrullet version (30/8)
+
+Kostede en time, og symptomet peger ingen steder hen.
+
+Hemmeligheder blev sat i Cloudflares DASHBOARD. Det opretter en ny VERSION af
+Workeren, men **udruller den ikke**. Den kørende Worker beholdt de gamle
+værdier, og operatør-login begyndte at svare et generisk **"Serverfejl"** —
+mens alt andet virkede, inklusive `getConfig` mod et bands Durable Object.
+
+`wrangler tail` gav årsagen på én linje: `MASTER_SECRET er ikke konfigureret`.
+Uden tail var der intet at gå efter; "Serverfejl" er med vilje uden detaljer.
+
+Derefter afviste `wrangler secret bulk` med kode 10215: *"the latest version of
+your Worker isn't currently deployed"*. Rækkefølgen er altså **deploy først,
+hemmeligheder bagefter.**
+
+To ting at holde fast i:
+
+- **Sæt hemmeligheder med `wrangler secret`, ikke i dashboardet.** Bruger du
+  dashboardet, SKAL du trykke Deploy på den version det laver.
+- **PowerShells skjulte prompt i `secret put` tager ofte ikke imod Ctrl+V.** Du
+  ser ingenting (det er meningen), trykker Enter, og wrangler melder "Success"
+  — på en TOM streng. En tom og en manglende hemmelighed er samme fejl, og
+  `secret list` viser stadig navnet. Brug `secret bulk <fil.json>`, skrevet med
+  `[IO.File]::WriteAllText` (uden BOM) i `$env:TEMP` — aldrig i repoet.
+
+## Login-låsen åbner af sig selv (30/8)
+
+Efter 5 fejlede forsøg låses kontoen i 15 minutter, og så åbner den selv. Ingen
+nulstilling nødvendig.
+
+Det afhænger af én linje: `login()` returnerer på `st.locked` FØR den straffer
+(`auth.js:53`). Byttes de to om, tæller hvert forsøg mens man er låst, og fordi
+`penalizeLogin` sætter `until` til nu + 15 min ved hvert kald, skubber hvert
+klik uret foran sig. Brugeren kommer aldrig ind uanset hvor længe de venter, og
+det ligner en konto der kun kan åbnes ved en nulstilling.
+
+Fire tjek fastholder det nu, validerede ved at genindføre fejlen. Samme
+rækkefølge gælder IP-grænsen (20 fejl pr. IP pr. 15 min).
+
+**Nulstilling er bandets egen opgave, ikke operatørens:** Admin-panel →
+Medlemmer → vælg medlem → "Nulstil adgangskode" nederst i drawer'en. Koden
+vises straks, og medlemmet tvinges til at vælge sin egen ved næste login.
+Verificeret ved gennemklikning 30/8. En admin kan nulstille en anden admin og
+sig selv — `resetPassword` tjekker ikke modtagerens rolle.
 
 ## VIGTIGT før første rigtige CPR-nummer
 
