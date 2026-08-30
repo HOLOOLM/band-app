@@ -51,9 +51,11 @@ for (const f of readdirSync(jsDir)) {
 
 // ── Side 2: hvad har tabellen? ─────────────────────────────────────────────
 const idxSrc = readFileSync(join(workerDir, 'src', 'actions', 'index.js'), 'utf8');
-const tabel = new Map();      // action → funktionsnavn
-for (const m of idxSrc.matchAll(/^\s{2}([a-zA-Z]+):\s*\{\s*scope:[^}]*fn:\s*([a-zA-Z]+)/gm)) {
-  tabel.set(m[1], m[2]);
+const tabel = new Map();      // action → { fn, auth, operatorOk }
+for (const m of idxSrc.matchAll(/^\s{2}([a-zA-Z]+):\s*\{([^}]*)fn:\s*([a-zA-Z]+)/gm)) {
+  const krop = m[2];
+  const auth = (krop.match(/auth:\s*'([a-z|]+)'/) || [])[1] || '';
+  tabel.set(m[1], { fn: m[3], auth, operatorOk: /operatorOk:\s*true/.test(krop) });
 }
 
 // Hele action-kildekoden i én streng, til parametersøgning.
@@ -66,6 +68,29 @@ for (const f of readdirSync(actionsDir)) {
 // ── Fejl 1: manglende actions ──────────────────────────────────────────────
 const manglende = [...frontend.keys()]
   .filter(a => !tabel.has(a) && !UDEN_FOR_TABELLEN.has(a))
+  .sort();
+
+
+// ── Fejl 2: operatør-panelet kalder noget en operatør ikke må ──────────────
+// Operatøren er ikke medlem af noget band og har derfor ingen medlems-session.
+// Kalder panelet en action der er gated som band-admin, får brugeren
+// "Ikke logget ind" på sin egen knap — og intet i selvtesten opdager det,
+// fordi testene kalder actions med en medlems-session.
+//
+// Det skete for adminReadConfig, adminWriteConfig og adminUploadAsset: alle tre
+// var gated 'admin', så Rediger-knappen i operatør-panelet var død fra dag ét.
+const opSrc = readFileSync(join(jsDir, '09-boot.js'), 'utf8');
+const opKald = new Set();
+for (const re of [/_apiCall\(\s*'([a-zA-Z]+)'/g, /api(?:Get|Post)\(\s*'([a-zA-Z]+)'/g]) {
+  for (const m of opSrc.matchAll(re)) opKald.add(m[1]);
+}
+const OPERATOER_OK = new Set(['public', 'operator']);
+const ikkeOperatoerbare = [...opKald]
+  .filter(a => tabel.has(a))
+  .filter(a => {
+    const d = tabel.get(a);
+    return !OPERATOER_OK.has(d.auth) && !d.operatorOk;
+  })
   .sort();
 
 // ── Advarsel: parametre der ikke læses ─────────────────────────────────────
@@ -103,6 +128,17 @@ if (manglende.length) {
   }
 } else {
   console.log('OK — hver action frontenden kalder findes i tabellen.');
+}
+
+if (ikkeOperatoerbare.length) {
+  exitKode = 1;
+  console.log('\nFEJL — operatør-panelet (09-boot.js) kalder actions en operatør ikke kan udføre:');
+  for (const a of ikkeOperatoerbare) {
+    console.log('  x ' + a + '   (auth: ' + tabel.get(a).auth +
+      ') — tilføj operatorOk: true, eller lad panelet være med at kalde den');
+  }
+} else {
+  console.log('OK — hver action operatør-panelet kalder kan udføres af en operatør.');
 }
 
 if (uLaeste.length) {

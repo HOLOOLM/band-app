@@ -13,16 +13,17 @@ autoritativ på *hvor vi er*.
 | | |
 |---|---|
 | Alle faser (1–6) | **Kodet, testet og deployet** |
-| Selvtest | **448 tjek, alle grønne**, verificeret idempotent over gentagne kørsler |
+| Selvtest | **452 tjek, alle grønne**, verificeret idempotent over gentagne kørsler |
 | Kontraktrevision | **Ren** — `node worker/tools/audit-actions.mjs` |
 | Ny Worker-kode | ~10.400 linjer i 45 moduler, 76 actions |
 | `Code.gs` → sidecar | 4.762 → 219 linjer (`apps-script/Sidecar.gs`) |
-| Fakturaarkiv | **Flyttet fra Google Drive til R2** (`band-app-arkiv`, EU-jurisdiktion) |
-| **I DRIFT** | **Nej.** `BACKEND = "sheets"` — alt kører fortsat på Apps Script |
-| Fakturaarkiv i drift | **Ja** — bucket `band-app-arkiv` oprettet i EU-jurisdiktion 28/8, deployet landede |
+| **I DRIFT** | **JA.** `BACKEND = "do"` siden 29/8 — Durable Objects er datalaget |
+| Fakturaarkiv | Bucket `band-app-arkiv`, EU-jurisdiktion, oprettet 28/8 |
+| Sidecar | Kører på det gamle Apps Script-projekt, verificeret 29/8 |
+| Operatør | Oprettet 29/8. `BOOTSTRAP_TOKEN` skal være slettet igen |
 
-Det nye datalag er altså bygget færdigt og ligger i produktion, men ingen bruger
-det. Frontenden er uændret bortset fra tre filer (se "Ændret i frontenden").
+Omskiftningen er sket. Google Sheet'et er urørt og kan rulles tilbage til, men
+`Code.gs` er overskrevet af sidecaren — se skridt 6 for hvad det koster.
 
 ---
 
@@ -100,8 +101,8 @@ udrulninger → rediger → vælg en tidligere version** (~5 min), eller at
 Verificeret 29/8: `doGet` svarer `{"ok":true,"sidecar":true}`, og `ping` med det
 rigtige token svarer `{"ok":true,"op":"ping"}`.
 
-**Mangler stadig:** `SIDECAR_TOKEN` som hemmelighed i Cloudflare. Uden den kan
-Workeren ikke kalde sidecaren — men Apps Script-siden er færdig.
+**`SIDECAR_TOKEN` er lagt op i Cloudflare 29/8**, og `SIDECAR_URL` peger på
+projektets `/exec` i `wrangler.toml`. Sidecaren er dermed færdig.
 
 Tre ting afhænger af sidecaren: PDF-dannelse, køreafstand og udgående mail.
 **Alt andet virker.** Den arkiverer ikke længere — det gør R2 nu — så den er
@@ -125,44 +126,35 @@ $body = '{"op":"ping","sidecarToken":"<token>"}'
 Invoke-RestMethod -Method Post -Uri $url -ContentType 'text/plain' -Body $body
 ```
 
-1. Indsæt `apps-script/Sidecar.gs` i et Apps Script-projekt (opsætningen står i
-   filens hoved)
-2. Slå Advanced Drive Service til: Tjenester → Drive API → Tilføj (versionen er
-   ligegyldig — sidecaren understøtter både v3 og v2)
-3. Deploy som web app: *Kør som mig*, *Adgang: Alle*
-4. Kør `setSidecarToken_RUN_ME()` med samme værdi du uploader nedenfor
-5. Upload hemmeligheder og sæt vars:
+Skal sidecaren nogensinde sættes op forfra, står opskriften i hovedet af
+`apps-script/Sidecar.gs`.
 
-```
-cd worker
-node node_modules\wrangler\bin\wrangler.js secret put SIDECAR_TOKEN
-node node_modules\wrangler\bin\wrangler.js secret put RESEND_API_KEY
-```
+**Mail mangler stadig** (Del C): `RESEND_API_KEY` som hemmelighed og `MAIL_FROM`
+i `wrangler.toml`. Uden dem er onboarding-mails døde knapper — men intet andet
+påvirkes: `sendMail` fejler kontrolleret, og hakket i "Opret band" er fravalgt
+som standard. Resend kræver at afsenderdomænet verificeres med SPF/DKIM/DMARC.
 
-Derefter i `worker/wrangler.toml`: `SIDECAR_URL = "<Apps Script /exec>"` og
-`MAIL_FROM = "band-app@<dit-domæne>"`.
+### 6. ~~Omskiftningen~~ ✅ GJORT 29/8
 
-Resend kræver desuden at domænet verificeres med SPF/DKIM/DMARC, ellers ryger
-mailen i spam.
+`BACKEND = "do"` er pushet, deployet landede på 10 sekunder, og operatøren er
+oprettet via `/api/_bootstrap`. Bandet `dmdt` er oprettet på det nye lag.
 
-### 6. Omskiftningen, når du vil have det i drift
+**Tjek at `BOOTSTRAP_TOKEN` er slettet i Cloudflare.** Ruten er inert så snart
+operatør-tabellen ikke er tom, men et ubrugt token er stadig et token.
 
-```
-node node_modules\wrangler\bin\wrangler.js secret put BOOTSTRAP_TOKEN
-```
+Tilbagerulning kræver nu TO ting, ikke én:
 
-Sæt `BACKEND = "do"` i `worker/wrangler.toml`, commit og push. Derefter ét kald,
-hvor du vælger din egen kode (mindst 12 tegn):
+1. `BACKEND = "sheets"` i `wrangler.toml`, commit og push
+2. Apps Script: **Udrul → Administrer udrulninger → rediger → tidligere
+   version**, fordi sidecaren har overskrevet `Code.gs`
 
-```
-curl.exe -s -X POST -H "X-Bootstrap-Token: DIT_TOKEN" -H "Content-Type: application/json" -d "{\"email\":\"jho@wooduppgroup.dk\",\"password\":\"din-kode\"}" https://band-app.jonasholm.workers.dev/api/_bootstrap
-```
+PowerShell-noter fra omskiftningen, som kostede tid:
 
-Slet så `BOOTSTRAP_TOKEN` igen. Ruten er automatisk inert bagefter (den virker
-kun mens operatør-tabellen er tom), men slet den alligevel.
-
-Åbn `?band=__operator`, log ind, opret et band. Tilbagerulning: sæt
-`BACKEND = "sheets"` og push.
+- `Read-Host` kan returnere tom streng, og indsætning i den kan afkorte uset —
+  et 48-tegns token blev til 39. Kontrollér altid `$x.Length` bagefter
+- En `$body`-variabel er en KOPI. Retter man `$pw` bagefter, sender kaldet
+  stadig den gamle værdi. Byg kroppen inde i selve kaldet:
+  `-Body (@{email=$mail; password=$pw} | ConvertTo-Json -Compress)`
 
 **Flaget er pr. band:** `"do:mit-band"` flytter kun det ene. Det fejler mod
 Sheets ved enhver tastefejl — tolv tjek håndhæver det.
@@ -194,8 +186,9 @@ node worker/tools/audit-actions.mjs
 ```
 
 Den sammenligner de 63 action-navne frontenden faktisk kalder med
-action-tabellen, og fanger to fejlklasser: en action frontenden kalder som ikke
-findes, og et parameternavn ingen action læser.
+action-tabellen, og fanger tre fejlklasser: en action frontenden kalder som ikke
+findes, en action operatør-panelet kalder som en operatør ikke må udføre, og et
+parameternavn ingen action læser.
 
 **Hvorfor den findes:** seks fejl slap gennem 440 selvtest-tjek OG en manuel
 gennemklikning, fordi begge kalder actions med de navne implementeringen selv
@@ -208,6 +201,33 @@ parameternavne. Alle rettet 27/8; revisionen er ren.
 **Test-dækning beviser ikke kontrakt-overholdelse.** Det er den vigtigste lektion
 fra dagen, og grunden til at dette værktøj skal køres frem for at man stoler på
 grønne tjek.
+
+## Operatør-panelet kunne ikke redigere sine egne bands (29/8)
+
+Operatøren er ikke medlem af noget band og har derfor ingen medlems-session.
+Fem actions panelet kalder var alligevel gated som band-admin:
+
+    adminReadConfig  adminWriteConfig  adminUploadAsset  getFeedUrl  rotateFeedToken
+
+Resultatet var at **Rediger-knappen i operatør-panelet svarede "Ikke logget
+ind"** — panelet var ubrugeligt fra dag ét. `rotateFeedToken` skrev endda
+allerede `ctx.operator ? ctx.operator.email : ...` i revisionssporet: den var
+*skrevet* til en operatør, men *gated* som noget andet.
+
+Rettelsen er en udtrykkelig `operatorOk: true` pr. action, ikke en generel
+nøgle. Åbnede vi alle band-admin-actions for operatør-tokenet, kunne
+operatøren også gemme kontrakter og honorar i et hvilket som helst band — en
+rettighed panelet aldrig beder om, og som ville gøre revisionssporet
+misvisende: handlingen ville se ud som bandets egen.
+
+**Hvorfor ingen test fangede det:** selvtesten kaldte de fem actions med en
+medlems-session, altså med andre rettigheder end panelet faktisk har. Nu
+kaldes de med et rent operatør-token, og et modstykke-tjek sikrer at
+tilladelsen ikke bliver generel.
+
+`audit-actions.mjs` tjekker nu også denne fejlklasse: enhver action
+`09-boot.js` kalder skal kunne udføres af en operatør. Den fandt straks
+`getFeedUrl` og `rotateFeedToken`, som ingen endnu var stødt på.
 
 ## To fejl fundet ved at flytte arkivet (28/8)
 

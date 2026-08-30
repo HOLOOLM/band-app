@@ -120,12 +120,12 @@ export const ACTIONS = {
   // getRider og getSceneplan er 'member': de sendes videre til arrangører i
   // kontrakten, så de er ikke hemmelige — men de er store, og et ulogget kald
   // ville være en gratis måde at trække båndbredde.
-  adminReadConfig:      { scope: 'band', auth: 'admin',  fn: adminReadConfig },
-  adminWriteConfig:     { scope: 'band', auth: 'admin',  fn: adminWriteConfig },
+  adminReadConfig:      { scope: 'band', auth: 'admin', operatorOk: true,  fn: adminReadConfig },
+  adminWriteConfig:     { scope: 'band', auth: 'admin', operatorOk: true,  fn: adminWriteConfig },
   adminSaveAppearance:  { scope: 'band', auth: 'admin',  fn: adminSaveAppearance },
   adminGetBillingInfo:  { scope: 'band', auth: 'admin',  fn: adminGetBillingInfo },
   adminSaveBillingInfo: { scope: 'band', auth: 'admin',  fn: adminSaveBillingInfo },
-  adminUploadAsset:     { scope: 'band', auth: 'admin',  fn: adminUploadAsset },
+  adminUploadAsset:     { scope: 'band', auth: 'admin', operatorOk: true,  fn: adminUploadAsset },
   adminDeleteAsset:     { scope: 'band', auth: 'admin',  fn: adminDeleteAsset },
   getRider:             { scope: 'band', auth: 'member', fn: getRider },
   getSceneplan:         { scope: 'band', auth: 'member', fn: getSceneplan },
@@ -157,8 +157,8 @@ export const ACTIONS = {
   // inde i fan-out'en, hvor musikeren skal være medlem for at bandet tælles med.
   getAllJobs:       { scope: 'identity', auth: 'identity', fn: getAllJobs },
   getAllHonorar:    { scope: 'identity', auth: 'identity', fn: getAllHonorar },
-  getFeedUrl:       { scope: 'band',     auth: 'admin',    fn: getFeedUrl },
-  rotateFeedToken:  { scope: 'band',     auth: 'admin',    fn: rotateFeedToken },
+  getFeedUrl:       { scope: 'band',     auth: 'admin', operatorOk: true, fn: getFeedUrl },
+  rotateFeedToken:  { scope: 'band',     auth: 'admin', operatorOk: true, fn: rotateFeedToken },
 
   // ── Fase 3g ──────────────────────────────────────────────────────────────
   // De tre sidste er OFFENTLIGE og gates udelukkende af bk:-tokenet: en

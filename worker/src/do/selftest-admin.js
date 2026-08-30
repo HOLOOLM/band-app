@@ -98,6 +98,34 @@ export async function adminChecks(ydreEnv, ok) {
   const dublet = await kald('registerTenant', { bandId: A, bandName: 'Igen' }, opCreds);
   ok('registerTenant: dublet band-id afvises', dublet.ok === false, dublet.error);
 
+  // ── Operatøren skal kunne betjene sit eget panel ─────────────────────────
+  // Operatøren er ikke medlem af noget band og har ingen medlems-session.
+  // adminReadConfig, adminWriteConfig, adminUploadAsset, getFeedUrl og
+  // rotateFeedToken var alle gated 'admin' — så operatør-panelets Rediger-knap
+  // svarede "Ikke logget ind" på sin egen konfiguration.
+  //
+  // Ingen test fangede det, fordi selvtesten kaldte dem med en medlems-session,
+  // altså med andre rettigheder end panelet faktisk har. Derfor kaldes de her
+  // med et RENT operatør-token og intet andet.
+  const opLaes = await kald('adminReadConfig', { bandId: A }, opCreds);
+  ok('operatør: kan læse et bands konfiguration', opLaes.ok === true, opLaes.error);
+
+  const opSkriv = await kald('adminWriteConfig',
+    { bandId: A, changes: { bandTagline: 'sat af operatøren' } }, opCreds);
+  ok('operatør: kan rette et bands konfiguration', opSkriv.ok === true, opSkriv.error);
+
+  const opFeed = await kald('getFeedUrl', { bandId: A }, opCreds);
+  ok('operatør: kan hente bandets feed-token', opFeed.ok === true, opFeed.error);
+
+  // Modstykket: tilladelsen er udtrykkelig pr. action, ikke en generel nøgle.
+  // Uden dette tjek kunne nogen "løse" en fremtidig gate-fejl ved at give
+  // operatøren adgang til ALT, og intet ville protestere.
+  const opForbudt = await kald('saveContract',
+    { bandId: A, contract: { id: 'OP-1', date: '2026-01-01' } }, opCreds);
+  ok('operatør: kan IKKE handle som medlem i actions uden operatorOk',
+     opForbudt.ok === false && /logget ind/i.test(String(opForbudt.error || '')),
+     opForbudt.error);
+
   // Skabelon-kopiering.
   const bandA = bandStub(env, A);
   await bandA.putSettings({ theme: 'stål', primaryColor: '#E8A867', bandTagline: 'Tribute' },

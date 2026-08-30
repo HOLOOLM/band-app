@@ -67,6 +67,22 @@ export async function runAction(env, actionName, p, creds) {
       case 'member':
       case 'admin': {
         if (!ctx.band) throw userError('Handlingen kræver et band');
+
+        // Operatøren er ikke medlem af noget band og har derfor ingen
+        // medlems-session. Uden denne gren kunne operatør-panelet ikke læse
+        // eller rette et bands opsætning — den fik "Ikke logget ind" på sin
+        // egen Rediger-knap.
+        //
+        // Tilladelsen er UDTRYKKELIG pr. action (operatorOk) og ikke generel.
+        // Åbnede vi alle band-admin-actions for operatør-tokenet, ville
+        // operatøren også kunne gemme kontrakter og honorar i et hvilket som
+        // helst band — en rettighed panelet aldrig beder om, og som ville gøre
+        // revisionssporet meningsløst: handlingen ville se ud som bandets egen.
+        if (def.operatorOk && creds && creds.operatorToken) {
+          const op = await verifyOperator(env, creds.operatorToken);
+          if (op) { ctx.operator = op; break; }
+        }
+
         if (!creds || !creds.email || !creds.token) throw userError('Ikke logget ind');
         const m = await verifyMember(env, ctx.band, creds.email, creds.token);
         if (!m) throw userError('Ikke logget ind');
