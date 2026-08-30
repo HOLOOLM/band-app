@@ -149,9 +149,14 @@ async function doApproveAndSign(bookingId){
     const b = (CACHE.bookings || []).find(x => x.id === bookingId);
     const d = await apiPost('approveAndSignBooking', { bookingId: bookingId, typedName: name, expectedUpdatedAt: b && b.updatedAt });
     if (!d || !d.ok){ toast((d && d.error) || 'Kunne ikke godkende', 'err'); return; }
-    toast('Godkendt og underskrevet — link sendt til arrangøren');
-    closeDrawer();
-    cacheBust('bookings'); cacheBust('contracts'); renderBookingsList();
+    // Mailen kan være slået fra eller fejle. Backenden returnerer da signUrl,
+    // så linket kan sendes i hånden — men FØR denne rettelse sagde panelet
+    // "link sendt til arrangøren" uanset hvad, og smed linket væk. Admin fik
+    // altså en falsk bekræftelse på at en kontrakt var afsendt.
+    cacheBust('bookings'); cacheBust('contracts');
+    if (d.signUrl) { visSigneringslink(d.signUrl, 'Godkendt og underskrevet'); }
+    else { toast('Godkendt og underskrevet — link sendt til arrangøren'); closeDrawer(); }
+    renderBookingsList();
   });
 }
 
@@ -182,6 +187,53 @@ async function doResendSigningLink(bookingId){
   try {
     const d = await apiPost('resendSigningLink', { bookingId: bookingId });
     if (!d || !d.ok){ toast((d && d.error) || 'Kunne ikke gensende', 'err'); return; }
-    toast('Link gensendt til arrangøren');
+    if (d.signUrl) visSigneringslink(d.signUrl, 'Nyt link dannet');
+    else toast('Link gensendt til arrangøren');
   } catch(e){ toast('Netværksfejl: ' + e.message, 'err'); }
+}
+
+/**
+ * Viser signeringslinket så det kan sendes i hånden.
+ *
+ * Bruges når mailen ikke blev sendt — enten fordi mailtjenesten ikke er sat op,
+ * eller fordi afsendelsen fejlede. Uden dette ville linket kun findes i det
+ * svar panelet kastede væk, og bookingen ville stå som "afsendt" uden at
+ * arrangøren nogensinde havde hørt fra os.
+ */
+function visSigneringslink(url, overskrift){
+  const drawer = document.getElementById('drawer');
+  drawer.innerHTML = `
+    <div class="drawer-head">
+      <h2 class="serif" style="margin:0;font-size:20px">${escapeHtml(overskrift || 'Signeringslink')}</h2>
+      <button class="btn btn-text btn-sm" onclick="closeDrawer()">Luk</button>
+    </div>
+    <div class="drawer-body">
+      <div class="card" style="padding:16px;border:1px solid rgba(192,57,43,.25)">
+        <div class="eyebrow" style="margin-bottom:6px;color:var(--danger)">Mailen blev ikke sendt</div>
+        <p class="muted" style="font-size:13px;margin:0 0 12px">Mailtjenesten er ikke sat op, eller afsendelsen fejlede. Kontrakten er underskrevet fra jeres side — men <strong>arrangøren har ikke fået noget</strong>. Send linket herunder fra din egen mail.</p>
+      </div>
+      <div class="field" style="margin-top:14px">
+        <label>Signeringslink</label>
+        <textarea id="signUrlBox" class="textarea mono" rows="3" readonly style="width:100%;font-size:12px">${escapeHtml(url)}</textarea>
+      </div>
+      <div class="flex" style="gap:8px;margin-top:10px">
+        <button class="btn btn-primary" id="signUrlCopy">Kopiér link</button>
+        <a class="btn btn-ghost" href="mailto:?subject=${encodeURIComponent('Kontrakt til underskrift')}&body=${encodeURIComponent(url)}" style="text-decoration:none">Åbn i mailprogram</a>
+      </div>
+      <p class="muted" style="font-size:12px;margin-top:14px">Linket udløber. Kan arrangøren ikke nå det, så brug <strong>Gensend link</strong> for at danne et nyt.</p>
+    </div>`;
+  drawer.classList.add('show');
+  document.getElementById('drawerBackdrop').classList.add('show');
+  document.getElementById('signUrlCopy').onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+      toast('Link kopieret');
+    } catch(e){
+      // Udklipsholderen kræver at fanen har fokus. Markér i stedet, så
+      // Ctrl+C virker — brugeren skal ikke stå uden en vej videre.
+      const b = document.getElementById('signUrlBox');
+      b.focus(); b.select();
+      toast('Markeret — tryk Ctrl+C', 'err');
+    }
+  };
 }
