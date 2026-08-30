@@ -13,7 +13,7 @@ autoritativ på *hvor vi er*.
 | | |
 |---|---|
 | Alle faser (1–6) | **Kodet, testet og deployet** |
-| Selvtest | **467 tjek, alle grønne**, verificeret idempotent over gentagne kørsler |
+| Selvtest | **473 tjek, alle grønne**, verificeret idempotent over gentagne kørsler |
 | Kontraktrevision | **Ren** — `node worker/tools/audit-actions.mjs` |
 | Ny Worker-kode | ~10.700 linjer i 46 moduler, 78 actions |
 | `Code.gs` → sidecar | 4.762 → 219 linjer (`apps-script/Sidecar.gs`) |
@@ -190,6 +190,39 @@ dem ned og fordel dem; hvert medlem tvinges til at skifte ved første login.
 
 **7e. Efterarbejde.** Indtast bandets CPR under Indstillinger (eksportens
 `_bandCpr` viser værdien). Klik ☁ Arkivér på hver afregning, så de lægges i R2.
+
+### Hvad tællingen viste (30/8) — og de tre beslutninger den førte til
+
+`taelAlt()` gav: Members 10, Contracts 9, Attendances 68, **Invoices 18**,
+Riders 0, DistanceCache 56. Det er facit importen skal måles mod.
+
+**18 fakturaer, ikke 3.** Femten har status `slettet`; de tre aktive er
+2026-001, -002 og -003. Det nye lag filtrerer slettede fra i visningerne
+(`band.js:1086`), så HANDOVER's oprindelige "tre afregninger" var de tre
+synlige — påstanden om at ingen af dem er Drive-arkiveret holder. De syv rækker
+der HAR et `driveFileId` er alle slettede.
+
+**Kun de tre aktive importeres.** Prototypen genbrugte numre: syv slettede
+rækker deler 2026-001, og inv17/inv18 deler 2026-003 (en beløbsrettelse hvor
+nummeret blev holdt fast). Det nye lag reserverer i stedet — et slettet nummer
+er brændt for altid (`band.js:1050`). Tages alle 18 med, står 001–006 som
+optaget, og næste rigtige afregning bliver 2026-007 med et synligt hul efter
+de tre udstedte. Med kun de tre bliver næste 2026-004, ubrudt.
+`worker/tools/import-i-browseren.js` har `kunAktiveFakturaer()` til det.
+
+**Der importeres ind i `dmdt` med `overskriv: true`,** ikke ind i et nyt tomt
+band som skridt 7c foreslog. Et nyt band ville koste brandingen og logoet, der
+blev sat op 29/8. Prototypens `m1` erstatter operatørens admin-række — hvilket
+er præcis det ønskede, forudsat eksporten har et medlem med rolle `admin`.
+Konsol-scriptet tjekker det og advarer før importen.
+
+**contractId findes i to generationer** — bare tal (`29052026`) og med
+c-præfiks (`c29052028`). Begge peger på rigtige kontrakter; det er ikke et brud,
+og importen tager dem som de er.
+
+**Kronologi-kravet er afklaret:** afregningsnumre skal løbe efter
+UDSTEDELSESDATO, ikke spilledato. Det gør koden allerede, og der skal ingen
+ændring til. Se hukommelsens `fakturanumre-kronologiske`.
 
 ### Prototypens fakturaer er ALDRIG blevet arkiveret
 
@@ -400,6 +433,32 @@ Otte nye tjek dækker arkivet (`arkiv:` i `/api/_selftest`).
 
 Lektien er den samme som ved kontraktdriften: **et grønt tjek beviser kun det
 det faktisk kigger på.** Begge fejl sad i det led ingen test kiggede på.
+
+## Operatør-panelets sundhedsvisning var kontraktdrift (30/8)
+
+Bandlisten viste `undefined medlemmer` på hvert kort, og ALLE opsætnings-badges
+stod på "mangler" for alle bands — også dem der havde både logo og bank.
+
+`BandDO.health()` taler dansk internt (`medlemmer`, `naesteGig`,
+`forældreløseDeltagere`), mens `09-boot.js:298` læser `members`, `nextGig` og
+`warnings`. Kun ét navn var fælles: `hasCpr`. `hasLogo`, `hasRider` og `hasBank`
+har aldrig eksisteret i svaret og faldt derfor i else-grenen på `:303`.
+
+Det så ud som om `dmdt` manglede logo og rider. Det gjorde bandet ikke — det var
+panelet der tog fejl.
+
+**Hvorfor revisionen ikke fangede det:** `audit-actions.mjs` sammenligner
+action-navne og REQUEST-parametre. Svarfelter kigger den slet ikke på. Det er en
+tredje akse af samme fejlklasse som de to foregående gange.
+
+Rettelsen oversætter i `bandHealth` (`operator.js:412`) frem for at omdøbe i
+DO'en, fordi selvtesten og andre kaldere læser de danske navne. `hasRider` bruger
+samme betingelse som `getRider` lykkes under — PDF ELLER `riderText` — så et band
+med tekst-rider ikke fejlagtigt står som mangelfuldt.
+
+**Seks nye selvtest-tjek, og de læser med PANELETS feltnavne.** De er validerede
+ved at rulle rettelsen tilbage: alle seks fejler da, med `{"medlemmer":1}` og
+`hasRider=undefined` i detaljerne. Selvtesten står nu på 473 tjek.
 
 ## Fem arkitekturvalg der er lette at bryde
 
