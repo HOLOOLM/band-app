@@ -17,6 +17,7 @@ import { genTempPassword } from './members.js';
 import { registerIdentity } from '../auth/identity.js';
 import { sendMail } from '../services/mail.js';
 import { backupConfigured, putBackup, listBackups, getBackup, pruneBackups,
+         putRestoreMarker, getRestoreMarker, clearRestoreMarker,
          OPBEVARING_UGER } from '../services/backup.js';
 
 const OPERATOR_TOKEN_TTL_SEC = 8 * 60 * 60;
@@ -352,6 +353,155 @@ export async function runBackupNow(ctx) {
   await master.audit(operator.email, 'backup-koert', enkelt,
     ok.length + ' kopieret, ' + fejl.length + ' fejlede');
   return { ok: true, dato, kopieret: ok, fejlede: fejl, ryddet };
+}
+
+/**
+ * restoreBandToTime — ruller ét bands database tilbage til et tidspunkt.
+ *
+ * Bruger Cloudflares point-in-time recovery, som fører historik 30 dage
+ * tilbage for hvert SQLite-baseret objekt. Til forskel fra den ugentlige kopi
+ * er dette en FULD gendannelse: adgangskoder, sessioner og fakturaer følger
+ * med, og præcisionen er minuttet.
+ *
+ * ── HVORFOR DET ER TO SKRIDT ────────────────────────────────────────────────
+ * `onNextSessionRestoreBookmark` planlægger kun; den udfører først ved næste
+ * opstart. Vi henter derfor fortryd-bogmærket FØRST, gemmer det i R2 — uden
+ * for objektet, som ellers ville rulle det væk — og genstarter så objektet.
+ *
+ * ── HVAD DEN IKKE RULLER TILBAGE ────────────────────────────────────────────
+ * Master (bandets stamdata, CPR, identitetskort) og fakturaarkivet i R2 ligger
+ * uden for objektet og røres ikke. To følger af det:
+ *
+ *   • Har et medlem skiftet kode efter tidspunktet, får bandet den GAMLE hash
+ *     tilbage mens masters identitetskort har den nye. Login kan derfor fejle
+ *     for netop dem, indtil koden nulstilles.
+ *   • Fakturanumre bliver frigivet igen. Er en afregning dannet efter
+ *     tidspunktet, forsvinder rækken — og dermed reservationen — mens PDF'en
+ *     kan være sendt til en arrangør. Advarslen er derfor ikke pynt.
+ */
+export async function restoreBandToTime(ctx) {
+  const { env, p, operator } = ctx;
+  const bandId = String(p.bandId || p.targetBandId || '').trim();
+  if (!bandId) return { ok: false, error: 'bandId mangler' };
+  if (String(p.confirm || '') !== bandId) {
+    return { ok: false, error: 'Bekræft gendannelsen ved at sende confirm = band-id' };
+  }
+  const naar = p.tidspunkt || p.time;
+  if (!naar) return { ok: false, error: 'tidspunkt mangler' };
+
+  const master = masterStub(env);
+  const bandRow = await master.getBand(bandId);
+  if (!bandRow) return { ok: false, error: 'Ukendt band: ' + bandId };
+
+  const band = bandStub(env, bandId);
+  // Den RIGTIGE prøve, ikke bare et metode-tjek: lokalt findes metoderne,
+  // men lagringen bag dem gør ikke. Fejlteksten fra Cloudflare er præcis nok
+  // til at sende videre.
+  const probe = await band.pitrProbe();
+  if (!probe.ok) {
+    return { ok: false, error: 'Point-in-time recovery er ikke tilgængelig: ' + probe.error };
+  }
+
+  // Kopi FØRST. Går gendannelsen anderledes end ventet, findes den nuværende
+  // tilstand stadig som en fil man kan læse — uafhængigt af bogmærker.
+  let kopi = null;
+  if (backupConfigured(env)) {
+    try {
+      const dump = await band.exportAll();
+      const r = await putBackup(env, bandId, new Date().toISOString().slice(0, 10), dump);
+      kopi = r.key;
+    } catch (e) {
+      console.warn('restoreBandToTime: kopi før gendannelse fejlede: ' + (e && e.message || e));
+    }
+  }
+
+  const bm = await band.bogmaerkeForTid(naar);
+  if (!bm.ok) return { ok: false, error: bm.error };
+
+  const plan = await band.planlaegGendannelse(bm.bogmaerke);
+  if (!plan.ok) return { ok: false, error: plan.error };
+
+  // Markøren skal ligge i R2 FØR genstarten. Skrives den bagefter, og
+  // genstarten fejler undervejs, står vi med en planlagt gendannelse uden
+  // nogen vej tilbage.
+  if (backupConfigured(env)) {
+    await putRestoreMarker(env, bandId, {
+      fortrydBogmaerke: plan.fortrydBogmaerke,
+      gendannetTil: new Date(naar).toISOString(),
+      udfoertAf: operator.email,
+      udfoertKl: new Date().toISOString(),
+      kopiFoer: kopi
+    });
+  }
+
+  await master.audit(operator.email, 'gendannelse', bandId,
+    'til ' + new Date(naar).toISOString());
+
+  // Genstarten dræber objektet midt i kaldet, så RPC'en fejler. Det er
+  // forventet og betyder ikke at noget gik galt.
+  try { await band.genstartNu(); } catch (e) { /* forventet */ }
+
+  return {
+    ok: true,
+    bandId,
+    gendannetTil: new Date(naar).toISOString(),
+    fortrydBogmaerke: plan.fortrydBogmaerke,
+    kopiFoer: kopi,
+    bemaerk: 'Gendannelsen sker ved næste opslag på bandet. Den kan fortrydes ' +
+             'med undoBandRestore, så længe markøren findes.'
+  };
+}
+
+/** Fortryder den seneste gendannelse. Bogmærket kommer fra markøren i R2. */
+export async function undoBandRestore(ctx) {
+  const { env, p, operator } = ctx;
+  const bandId = String(p.bandId || p.targetBandId || '').trim();
+  if (!bandId) return { ok: false, error: 'bandId mangler' };
+  if (!backupConfigured(env)) {
+    return { ok: false, error: 'R2 er ikke sat op — fortryd-markøren kan ikke læses' };
+  }
+
+  const markoer = await getRestoreMarker(env, bandId);
+  if (!markoer || !markoer.fortrydBogmaerke) {
+    return { ok: false, error: 'Der er ingen gendannelse at fortryde for dette band' };
+  }
+
+  const band = bandStub(env, bandId);
+  const plan = await band.planlaegGendannelse(markoer.fortrydBogmaerke);
+  if (!plan.ok) return { ok: false, error: plan.error };
+
+  await clearRestoreMarker(env, bandId);
+  await masterStub(env).audit(operator.email, 'gendannelse-fortrudt', bandId,
+    'tilbage til ' + (markoer.udfoertKl || ''));
+
+  try { await band.genstartNu(); } catch (e) { /* forventet */ }
+
+  return {
+    ok: true,
+    bandId,
+    tilbageTil: markoer.udfoertKl || '',
+    bemaerk: 'Bandet er tilbage som før gendannelsen.'
+  };
+}
+
+/** Er der en gendannelse der kan fortrydes? Panelet bruger den til at vise knappen. */
+export async function bandRestoreState(ctx) {
+  const { env, p } = ctx;
+  const bandId = String(p.bandId || p.targetBandId || '').trim();
+  if (!bandId) return { ok: false, error: 'bandId mangler' };
+  const probe = await bandStub(env, bandId).pitrProbe();
+  const markoer = backupConfigured(env) ? await getRestoreMarker(env, bandId) : null;
+  return {
+    ok: true,
+    pitr: probe.ok,
+    pitrFejl: probe.ok ? '' : probe.error,
+    kanFortryde: !!(markoer && markoer.fortrydBogmaerke),
+    seneste: markoer ? {
+      gendannetTil: markoer.gendannetTil,
+      udfoertAf: markoer.udfoertAf,
+      udfoertKl: markoer.udfoertKl
+    } : null
+  };
 }
 
 /**

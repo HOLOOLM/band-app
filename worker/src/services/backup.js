@@ -69,7 +69,13 @@ export async function putBackup(env, bandId, dato, data) {
   return { ok: true, key, bytes: krop.length };
 }
 
-/** Kopierne for ét band, nyeste først. */
+/**
+ * Kopierne for ét band, nyeste først.
+ *
+ * Kun filnavne på formen ÅÅÅÅ-MM-DD.json tælles med. Det holder
+ * gendannelses-markøren (`_gendannelse.json`) ude af listen, så operatøren
+ * ikke tilbydes at hente den som om den var en sikkerhedskopi.
+ */
 export async function listBackups(env, bandId) {
   const prefix = PRAEFIKS + String(bandId).replace(/[^a-z0-9-]/g, '') + '/';
   const ud = [];
@@ -77,9 +83,11 @@ export async function listBackups(env, bandId) {
   do {
     const liste = await env.ARCHIVE.list({ prefix, cursor, limit: 1000 });
     for (const o of liste.objects) {
+      const navn = o.key.split('/').pop() || '';
+      if (!/^\d{4}-\d{2}-\d{2}\.json$/.test(navn)) continue;
       ud.push({
         key: o.key,
-        dato: (o.key.split('/').pop() || '').replace('.json', ''),
+        dato: navn.replace('.json', ''),
         bytes: o.size,
         uploaded: o.uploaded ? new Date(o.uploaded).toISOString() : ''
       });
@@ -88,6 +96,37 @@ export async function listBackups(env, bandId) {
   } while (cursor);
   ud.sort((a, b) => (a.dato < b.dato ? 1 : a.dato > b.dato ? -1 : 0));
   return ud;
+}
+
+// ── Gendannelses-markør ─────────────────────────────────────────────────────
+//
+// Fortryd-bogmærket fra en PITR-gendannelse må IKKE ligge inde i bandets eget
+// objekt: gendannelsen ruller objektets indhold tilbage, og markøren ville
+// ryge med. Så ville gendannelsen være enkeltrettet — netop dét den ikke
+// behøver være, fordi Cloudflare giver et bogmærke for tidspunktet lige før.
+//
+// Den ligger derfor i R2, hvor den overlever både gendannelsen og en genstart.
+
+function markoerNoegle(bandId) {
+  return PRAEFIKS + String(bandId).replace(/[^a-z0-9-]/g, '') + '/_gendannelse.json';
+}
+
+export async function putRestoreMarker(env, bandId, data) {
+  await env.ARCHIVE.put(markoerNoegle(bandId), JSON.stringify(data), {
+    httpMetadata: { contentType: 'application/json' }
+  });
+  return { ok: true };
+}
+
+export async function getRestoreMarker(env, bandId) {
+  const obj = await env.ARCHIVE.get(markoerNoegle(bandId));
+  if (!obj) return null;
+  try { return JSON.parse(await obj.text()); } catch (e) { return null; }
+}
+
+export async function clearRestoreMarker(env, bandId) {
+  await env.ARCHIVE.delete(markoerNoegle(bandId));
+  return { ok: true };
 }
 
 /** Henter én kopi som tekst. Returnerer null hvis nøglen ikke findes. */

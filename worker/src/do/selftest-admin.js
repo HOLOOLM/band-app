@@ -631,6 +631,17 @@ export async function adminChecks(ydreEnv, ok) {
   ok('deleteTenant: bandet står stadig i registret efter admins forsøg',
      (await master.getBand(A)) !== null);
 
+  // ── Point-in-time recovery ──────────────────────────────────────────────
+  // Rapporteres uanset udfald: er PITR ikke tilgængelig lokalt, skal det stå
+  // i resultatet frem for at gendannelsen ser utestet ud uden forklaring.
+  // Metoderne findes lokalt, men lagringen bag dem gør ikke. Derfor prøves
+  // der med et rigtigt (læsende) kald frem for at tjekke om funktionen
+  // eksisterer — det skel kostede en fejlet testkørsel at opdage.
+  const pitrProbe = await bandStub(env, B).pitrProbe();
+  ok('pitr: tilgængelighed afgøres med et rigtigt kald, ikke et metode-tjek',
+     typeof pitrProbe.ok === 'boolean',
+     pitrProbe.ok ? 'virker' : 'virker IKKE her: ' + pitrProbe.error);
+
   // ── Ugentlig sikkerhedskopi ─────────────────────────────────────────────
   // Tages FØR B slettes nedenfor, så vi bagefter kan bevise at kopien
   // overlever sletningen. Det er hele grunden til at den ikke ligger under
@@ -721,4 +732,120 @@ export async function adminChecks(ydreEnv, ok) {
      JSON.stringify(ryddet));
   ok('backup: oprydningen beholder de nye',
      (await kald('listBandBackups', { bandId: B }, opCreds)).backups.length >= 1);
+
+  // ── Point-in-time recovery: den fulde rundtur ───────────────────────────
+  //
+  // Det her er det tjek der betyder noget. Alt andet om PITR kan man læse sig
+  // til i Cloudflares dokumentation; dette beviser at DENNE app kan bruge det.
+  //
+  // Eget band, fordi gendannelsen ruller HELE objektet tilbage. Kørte den mod
+  // A eller B, ville alle tidligere tjeks data forsvinde under dem.
+  const P = 'selftest-pitr';
+  try { await bandStub(env, P).wipe(); } catch (e) {}
+  await master.deleteBand(P, 'selftest', 'oprydning');
+  await kald('registerTenant', { bandId: P, bandName: 'PITR-band' }, opCreds);
+  const pBand = bandStub(env, P);
+
+  // En kontrakt UANSET om rundturen kan køres. Uden den ville tjekket
+  // "rører IKKE bandet når den fejler" sammenligne 0 med 0 og bestå selv
+  // hvis bandet blev tømt.
+  await pBand.saveContract(
+    { type: 'Spillested', date: '2026-04-01', honorar: 500, venue: '{"name":"BASIS"}' }, []);
+
+  const pProbe = await pBand.pitrProbe();
+  if (!pProbe.ok) {
+    // IKKE et grønt tjek der lyver. Rundturen er ikke kørt, og det står der.
+    ok('pitr: rundturen er IKKE bevist i denne kørsel', true,
+       'oversprunget — ' + pProbe.error + '. Kør mod produktion.');
+  } else {
+    const foer = await pBand.saveContract(
+      { type: 'Spillested', date: '2026-05-01', honorar: 1000, venue: '{"name":"FOER"}' }, []);
+    ok('pitr: udgangspunkt oprettet', foer.ok === true, foer.error);
+
+    // Bogmærket tages HER — mellem de to kontrakter. Et tidsbaseret opslag
+    // ville være et kapløb i en test der kører på millisekunder.
+    const punkt = await pBand.nuvaerendeBogmaerke();
+    ok('pitr: kan hente et bogmærke for nuet',
+       punkt.ok === true && typeof punkt.bogmaerke === 'string' && punkt.bogmaerke.length > 0,
+       punkt.bogmaerke ? String(punkt.bogmaerke).slice(0, 16) + '…' : 'intet');
+
+    const efter = await pBand.saveContract(
+      { type: 'Spillested', date: '2026-06-01', honorar: 2000, venue: '{"name":"EFTER"}' }, []);
+    ok('pitr: ændringen efter bogmærket er skrevet', efter.ok === true, efter.error);
+    ok('pitr: bandet har nu to kontrakter',
+       (await pBand.exportAll()).contracts.length === 2);
+
+    // Gendan til punktet mellem de to.
+    const plan = await pBand.planlaegGendannelse(punkt.bogmaerke);
+    ok('pitr: gendannelsen kan planlægges og giver et fortryd-bogmærke',
+       plan.ok === true && typeof plan.fortrydBogmaerke === 'string' &&
+       plan.fortrydBogmaerke.length > 0,
+       plan.error || String(plan.fortrydBogmaerke).slice(0, 16) + '…');
+
+    // Genstart KUN hvis planen lykkedes. Gjorde vi det ubetinget, ville en
+    // fejlet plan alligevel dræbe objektet — og resten af selvtesten med sig.
+    // Det kostede en kørsel at opdage: 373 tjek i stedet for 502.
+    if (plan.ok) { try { await pBand.genstartNu(); } catch (e) {} }
+
+    const efterGendan = await pBand.exportAll();
+    ok('pitr: GENDANNELSEN VIRKER — ændringen efter bogmærket er rullet væk',
+       efterGendan.contracts.length === 1 &&
+       String(efterGendan.contracts[0].venue).includes('FOER'),
+       efterGendan.contracts.length + ' kontrakter: ' +
+       efterGendan.contracts.map(c => c.venue).join(', '));
+
+    // Og den vej tilbage. Uden dette ville gendannelsen være enkeltrettet, og
+    // et fejlgreb i tidspunktet ville koste alt siden.
+    const fortryd = plan.ok
+      ? await pBand.planlaegGendannelse(plan.fortrydBogmaerke)
+      : { ok: false, error: 'planen fejlede' };
+    ok('pitr: fortrydelsen kan planlægges', fortryd.ok === true, fortryd.error);
+    if (fortryd.ok) { try { await pBand.genstartNu(); } catch (e) {} }
+
+    const efterFortryd = await pBand.exportAll();
+    ok('pitr: FORTRYDELSEN VIRKER — begge kontrakter er tilbage',
+       efterFortryd.contracts.length === 2,
+       efterFortryd.contracts.length + ' kontrakter');
+  }
+
+  // ── Gaten og bekræftelsen på operatør-actionerne ────────────────────────
+  const udenConfirm = await kald('restoreBandToTime',
+    { bandId: P, tidspunkt: new Date().toISOString() }, opCreds);
+  ok('restoreBandToTime: kræver bekræftelse med band-id',
+     udenConfirm.ok === false && /confirm/i.test(String(udenConfirm.error || '')),
+     udenConfirm.error);
+
+  const udenTidspunkt = await kald('restoreBandToTime',
+    { bandId: P, confirm: P }, opCreds);
+  ok('restoreBandToTime: kræver et tidspunkt',
+     udenTidspunkt.ok === false, udenTidspunkt.error);
+
+  // Med BEGGE felter udfyldt, men uden fungerende PITR: skal fejle rent og
+  // IKKE genstarte objektet. Gjorde den det, ville et klik i produktion kunne
+  // dræbe et band uden at gendanne noget — det værste af begge verdener.
+  const foerForsoeg = (await pBand.exportAll()).contracts.length;
+  const utilgaengelig = await kald('restoreBandToTime',
+    { bandId: P, confirm: P, tidspunkt: new Date(Date.now() - 3600000).toISOString() }, opCreds);
+  if (!pProbe.ok) {
+    ok('restoreBandToTime: fejler rent når PITR ikke er tilgængelig',
+       utilgaengelig.ok === false && /ikke tilgængelig/i.test(String(utilgaengelig.error || '')),
+       utilgaengelig.error);
+    ok('restoreBandToTime: rører IKKE bandet når den fejler',
+       (await pBand.exportAll()).contracts.length === foerForsoeg,
+       foerForsoeg + ' kontrakter før og efter');
+  }
+
+  const tilstand = await kald('bandRestoreState', { bandId: P }, opCreds);
+  ok('bandRestoreState: rapporterer om PITR er tilgængelig',
+     tilstand.ok === true && typeof tilstand.pitr === 'boolean',
+     'pitr=' + tilstand.pitr);
+
+  const intetAtFortryde = await kald('undoBandRestore', { bandId: P }, opCreds);
+  ok('undoBandRestore: siger fra når der intet er at fortryde',
+     intetAtFortryde.ok === false, intetAtFortryde.error);
+
+  const admGendan = await kaldA('restoreBandToTime',
+    { bandId: A, confirm: A, tidspunkt: new Date().toISOString() });
+  ok('restoreBandToTime: en band-admin kan IKKE gendanne',
+     admGendan.ok === false, admGendan.error);
 }

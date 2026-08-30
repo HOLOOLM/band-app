@@ -36,7 +36,8 @@ import {
   bandHealth, getAuditLog, backupBand, migrateAllBands, deleteTenant,
   operatorChangePassword, adminResetMemberPassword, runRetentionNow,
   operatorListMembers, operatorSetMemberRole,
-  listBandBackups, getBandBackup, runBackupNow
+  listBandBackups, getBandBackup, runBackupNow,
+  restoreBandToTime, undoBandRestore, bandRestoreState
 } from './operator.js';
 import {
   getAllJobs, getAllHonorar, getFeedUrl, rotateFeedToken
@@ -158,6 +159,13 @@ export const ACTIONS = {
   listBandBackups:          { scope: 'master', auth: 'operator', fn: listBandBackups },
   getBandBackup:            { scope: 'master', auth: 'operator', fn: getBandBackup },
   runBackupNow:             { scope: 'master', auth: 'operator', fn: runBackupNow },
+  // Point-in-time recovery. Rækkefølgen er to skridt med vilje: bogmærket
+  // planlægges, fortryd-bogmærket gemmes i R2, og FØRST derefter genstartes
+  // objektet. Lå fortryd-bogmærket inde i objektet, ville gendannelsen
+  // rulle det væk og dermed være enkeltrettet.
+  restoreBandToTime:        { scope: 'master', auth: 'operator', fn: restoreBandToTime },
+  undoBandRestore:          { scope: 'master', auth: 'operator', fn: undoBandRestore },
+  bandRestoreState:         { scope: 'master', auth: 'operator', fn: bandRestoreState },
   // adminDeleteBand er FJERNET 30/8. Den lod bandets EGEN admin slette hele
   // bandet permanent — database, fakturaarkiv og faktureringsoplysninger — med
   // en prompt() som eneste værn. Rollen "admin" i et band er typisk et menigt

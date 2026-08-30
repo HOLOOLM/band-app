@@ -13,7 +13,7 @@ autoritativ på *hvor vi er*.
 | | |
 |---|---|
 | Alle faser (1–6) | **Kodet, testet og deployet** |
-| Selvtest | **501 tjek, alle grønne**, verificeret idempotent over gentagne kørsler |
+| Selvtest | **510 tjek, alle grønne**, verificeret idempotent over gentagne kørsler |
 | Kontraktrevision | **Ren** — `node worker/tools/audit-actions.mjs` |
 | Ny Worker-kode | ~10.700 linjer i 46 moduler, 78 actions |
 | `Code.gs` → sidecar | 4.762 → 219 linjer (`apps-script/Sidecar.gs`) |
@@ -358,9 +358,36 @@ der lover det modsatte. Tjekket er bevist ved at LÆGGE en fil på den forbudte
 nøgle først; ellers ville det bestå af den uinteressante grund at filen ikke
 fandtes.
 
-**Endnu ikke bygget:** en gendannelses-action til PITR. Dataene kan reddes, men
-der findes ingen kode der gør det — `onNextSessionRestoreBookmark` optræder
-ingen steder. Skal skrives FØR den skal bruges, ikke under tidspres.
+**Gendannelsen ER nu bygget** (`restoreBandToTime`, `undoBandRestore`,
+`bandRestoreState`) — men **selve gendannelsen er IKKE afprøvet.** Se nedenfor.
+
+### PITR kan ikke testes lokalt, og det ser ud som om den kan
+
+`wrangler dev` har alle tre PITR-metoder på `ctx.storage`, og
+`getCurrentBookmark()` svarer endda med et attrap-bogmærke (`00000000-…`). Først
+det egentlige kald fejler:
+
+    This Durable Object's storage back-end does not implement point-in-time recovery
+
+Min første tilgængeligheds-test tjekkede om funktionerne fandtes og meldte
+"tilgængelig". Derfor findes `pitrProbe()`, som prøver et LÆSENDE kald i stedet.
+`onNextSessionRestoreBookmark` kunne ikke bruges som prøve: lykkedes den, ville
+den planlægge en gendannelse, og der findes ingen måde at afbestille den på.
+
+**Rundturen er derfor markeret som IKKE bevist** i selvtesten frem for at se
+grøn ud. Det der ER bevist: bekræftelseskravet, tidspunkts-kravet, gaten mod
+band-admins, at fortryd-markøren mangler når intet er gendannet — og vigtigst,
+at et forsøg uden fungerende PITR fejler RENT uden at genstarte objektet. Uden
+det sidste kunne et klik i produktion dræbe et band uden at gendanne noget.
+
+**Sådan bevises den i produktion** (5 minutter, gør det før den skal bruges):
+opret et engangsband, lav en kontrakt, notér tidspunktet, lav en kontrakt til,
+kør `restoreBandToTime` med tidspunktet imellem, og se at kontrakt nummer to er
+væk. Kør så `undoBandRestore` og se den komme igen. Slet bandet.
+
+**Der er bevidst INGEN knap i panelet endnu.** En destruktiv handling hvis
+første rigtige brug også er dens første test, hører ikke i et UI. Knappen
+tilføjes når rundturen er kørt mod produktion.
 
 ## Operatør-panelet: nyt siden 30/8
 

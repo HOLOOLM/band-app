@@ -46,6 +46,103 @@ export class BandDO extends DurableObject {
     });
   }
 
+  // ── Point-in-time recovery ────────────────────────────────────────────────
+  //
+  // Cloudflare fører selv en historik 30 dage tilbage for hvert SQLite-baseret
+  // objekt. Den er slået til som standard og koster ingenting — men der findes
+  // ingen knap. Gendannelse sker gennem de tre metoder herunder.
+  //
+  // BEMÆRK REKKEFØLGEN. `onNextSessionRestoreBookmark` gør ingenting med det
+  // samme: den planlægger en gendannelse til NÆSTE opstart. Først når objektet
+  // genstartes (ctx.abort) sker den. Derfor er det to adskilte kald, og
+  // fortryd-bogmærket skal gemmes UDEN FOR objektet imellem dem — inde i
+  // objektet ville det blive rullet væk af selve gendannelsen.
+
+  /**
+   * Findes METODERNE? Det er ikke det samme som at PITR virker.
+   *
+   * Lokalt (`wrangler dev`) findes alle tre funktioner, og
+   * `getCurrentBookmark()` svarer endda med et attrap-bogmærke
+   * (`00000000-…`) — men det egentlige kald fejler med "This Durable Object's
+   * storage back-end does not implement point-in-time recovery".
+   *
+   * Brug derfor `pitrProbe()` når svaret skal betyde noget. Denne findes kun
+   * til at skelne "metoden mangler helt" fra "backenden kan det ikke".
+   */
+  async pitrApiFindes() {
+    const s = this.ctx.storage;
+    return typeof s.getCurrentBookmark === 'function' &&
+           typeof s.getBookmarkForTime === 'function' &&
+           typeof s.onNextSessionRestoreBookmark === 'function';
+  }
+
+  /**
+   * Virker PITR RIGTIGT i denne kørsel?
+   *
+   * Prøver et LÆSENDE kald. `onNextSessionRestoreBookmark` kunne ikke bruges
+   * som prøve: lykkedes den, ville den planlægge en gendannelse, og der findes
+   * ingen måde at afbestille den på. En prøve må ikke kunne ændre noget.
+   */
+  async pitrProbe() {
+    if (!await this.pitrApiFindes()) {
+      return { ok: false, error: 'PITR-metoderne findes ikke i denne runtime' };
+    }
+    try {
+      await this.ctx.storage.getBookmarkForTime(new Date(Date.now() - 60000));
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: String(e && e.message || e) };
+    }
+  }
+
+  /** Bogmærket for et tidspunkt. `naar` er millisekunder eller en ISO-streng. */
+  async bogmaerkeForTid(naar) {
+    if (!await this.pitrApiFindes()) {
+      return { ok: false, error: 'PITR er ikke tilgængelig i denne kørsel' };
+    }
+    const d = new Date(naar);
+    if (isNaN(d.getTime())) return { ok: false, error: 'Ugyldigt tidspunkt' };
+    try {
+      return { ok: true, bogmaerke: await this.ctx.storage.getBookmarkForTime(d) };
+    } catch (e) {
+      // Uden for 30-dages vinduet svarer Cloudflare med en fejl frem for et
+      // bogmærke. Den skal videre til operatøren som noget læsbart.
+      return { ok: false, error: 'Kunne ikke finde et bogmærke: ' + (e && e.message || e) };
+    }
+  }
+
+  /**
+   * Planlægger gendannelsen og returnerer FORTRYD-bogmærket.
+   *
+   * Kalder IKKE abort — det gør `genstartNu` bagefter. Skete begge dele i ét
+   * kald, ville objektet dø før svaret nåede frem, og fortryd-bogmærket ville
+   * være tabt. Så ville gendannelsen være enkeltrettet, og det er præcis dét
+   * den ikke behøver være.
+   */
+  async planlaegGendannelse(bogmaerke) {
+    if (!await this.pitrApiFindes()) {
+      return { ok: false, error: 'PITR er ikke tilgængelig i denne kørsel' };
+    }
+    try {
+      const fortryd = await this.ctx.storage.onNextSessionRestoreBookmark(String(bogmaerke));
+      return { ok: true, fortrydBogmaerke: fortryd };
+    } catch (e) {
+      return { ok: false, error: 'Kunne ikke planlægge gendannelsen: ' + (e && e.message || e) };
+    }
+  }
+
+  /** Genstarter objektet, så den planlagte gendannelse udføres. */
+  async genstartNu() {
+    this.ctx.abort('point-in-time recovery');
+    return { ok: true };
+  }
+
+  /** Nuværende punkt i historikken. Bruges til at markere "før" i et forløb. */
+  async nuvaerendeBogmaerke() {
+    if (!await this.pitrApiFindes()) return { ok: false };
+    return { ok: true, bogmaerke: await this.ctx.storage.getCurrentBookmark() };
+  }
+
   // ── Livscyklus ────────────────────────────────────────────────────────────
 
   /**
