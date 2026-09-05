@@ -13,7 +13,7 @@ autoritativ på *hvor vi er*.
 | | |
 |---|---|
 | Alle faser (1–6) | **Kodet, testet og deployet** |
-| Selvtest | **510 tjek, alle grønne**, verificeret idempotent over gentagne kørsler |
+| Selvtest | **513 tjek, alle grønne**, verificeret idempotent over gentagne kørsler |
 | Kontraktrevision | **Ren** — `node worker/tools/audit-actions.mjs` |
 | Ny Worker-kode | ~10.700 linjer i 46 moduler, 78 actions |
 | `Code.gs` → sidecar | 4.762 → 219 linjer (`apps-script/Sidecar.gs`) |
@@ -622,6 +622,34 @@ med tekst-rider ikke fejlagtigt står som mangelfuldt.
 **Seks nye selvtest-tjek, og de læser med PANELETS feltnavne.** De er validerede
 ved at rulle rettelsen tilbage: alle seks fejler da, med `{"medlemmer":1}` og
 `hasRider=undefined` i detaljerne. Selvtesten står nu på 473 tjek.
+
+## Skrives uændrede rækker om? (gennemgået 30/8)
+
+Spørgsmålet var om appen sletter og genindsætter hele rækkesæt ved hver
+skrivning. Svaret er nej — med én undtagelse, som nu er rettet.
+
+| Skrivesti | Adfærd |
+|---|---|
+| `db.update` (`lib/sql.js:93`) | Rigtig `UPDATE ... SET ... WHERE` |
+| `putSettings` | Upsert, kun de nøgler der sendes |
+| `#syncAttendances` | Inkrementel — slet-alt blev udtrykkeligt fravalgt, fordi det ødelagde bekræftelser og cachede afstande |
+| `#putMeta` | Upsert |
+| `putAsset` | Sletter chunks og skriver nye — uundgåeligt ved filudskiftning |
+| `importAll` | `INSERT OR REPLACE` — kun ved import, bevidst for idempotens |
+| `setBookerBands` | **Var** slet-alt-og-indsæt. Rettet 30/8 |
+
+**Hvorfor `setBookerBands` blev rettet selvom den ikke gjorde skade:**
+`booker_bands` har kun `(email, band_id)` og bærer derfor ingen tilstand at
+miste. Men det er en fælde der ligger og venter: tilføjer nogen en kolonne —
+hvornår adgangen blev givet, af hvem, en rolle — ville hver gemning nulstille
+den for alle bands, og fejlen ville vise sig som "datoerne er pludselig ens"
+længe efter ændringen.
+
+**Om at skrive et tjek der er for slapt:** mit første tjek satte grænsen til
+under 5 skrevne rækker. Med ét band skriver den gamle adfærd 4 og den nye 2 —
+altså bestod tjekket ALTID. Det blev først brugbart da testen kaldte metoden
+direkte med fem bands, hvor forskellen er 0 mod 10. Valideret ved at genindføre
+fejlen: 10 rækker skrevet hvor intet var ændret.
 
 ## Fem arkitekturvalg der er lette at bryde
 

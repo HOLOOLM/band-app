@@ -290,6 +290,40 @@ export async function bookingChecks(ydreEnv, ok) {
      typeof nyBooker.tempPassword === 'string' && nyBooker.tempPassword.length === 14,
      nyBooker.error);
 
+  // ── Uændrede rækker må ikke skrives om ──────────────────────────────────
+  //
+  // setBookerBands slettede før HELE rækkesættet og indsatte det igen, også
+  // når intet var ændret. Det gjorde ingen skade så længe tabellen kun har
+  // (email, band_id) — men tilføjer nogen en kolonne, fx hvornår adgangen blev
+  // givet, ville hver gemning nulstille den for alle bands. Fejlen ville vise
+  // sig som "datoerne er pludselig ens" længe efter ændringen.
+  //
+  // total_changes() tæller rækker skrevet siden forbindelsen blev åbnet, så
+  // differencen er et hårdt tal og ikke en hensigt.
+  // Metoden kaldes DIREKTE med flere bands. Gik vi gennem operatorSaveBooker
+  // med ét band, ville forskellen være 2 rækker mod 4 — og en grænse dér er så
+  // fin at den let bliver sat forkert. Med fem bands er forskellen 0 mod 10.
+  const FEM = ['b-en', 'b-to', 'b-tre', 'b-fire', 'b-fem'];
+  await master.setBookerBands(BOOKER, FEM);
+
+  const skrivFoer = await master.writeCounter();
+  const uaendret = await master.setBookerBands(BOOKER, FEM);
+  const skrevet = (await master.writeCounter()) - skrivFoer;
+  ok('setBookerBands: gemning med SAMME bands skriver INGEN rækker',
+     skrevet === 0 && uaendret.tilfoejet === 0 && uaendret.fjernet === 0,
+     skrevet + ' rækker skrevet (slet-alt-og-indsæt ville give 10)');
+  ok('setBookerBands: adgangen er uændret bagefter',
+     (await master.bookerBands(BOOKER)).length === 5);
+
+  // Og at den faktisk kan ændre noget — ellers ville "skriver ingenting"
+  // også bestå hvis metoden var holdt op med at virke.
+  const aendret = await master.setBookerBands(BOOKER, ['b-en', 'b-to', 'b-seks']);
+  ok('setBookerBands: skriver kun forskellen når listen ændres',
+     aendret.tilfoejet === 1 && aendret.fjernet === 3,
+     '+' + aendret.tilfoejet + ' / -' + aendret.fjernet);
+
+  await master.setBookerBands(BOOKER, [BAND]);   // tilbage til udgangspunktet
+
   const booker2 = await runAction(env, 'operatorSaveBooker',
     { email: BOOKER2, name: 'Agent B', agency: 'Andet Bureau', bandIds: [BAND] }, opCreds);
 

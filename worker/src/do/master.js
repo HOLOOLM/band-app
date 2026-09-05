@@ -308,19 +308,53 @@ export class MasterDO extends DurableObject {
       String(email || '').toLowerCase().trim()).map(r => r.bandId);
   }
 
+  /**
+   * Sætter hvilke bands en booker har adgang til.
+   *
+   * FØR: `DELETE FROM booker_bands WHERE email = ?` efterfulgt af en indsættelse
+   * pr. band — altså blev hele rækkesættet skrevet om, også de rækker der var
+   * uændrede.
+   *
+   * Det gjorde ingen skade i dag, fordi tabellen kun har (email, band_id) og
+   * derfor ikke bærer nogen tilstand at miste. Men det er en fælde der ligger og
+   * venter: tilføjer nogen en kolonne — hvornår adgangen blev givet, af hvem, en
+   * rolle — så ville hver gemning nulstille den for alle bands, og fejlen ville
+   * vise sig som "datoerne er pludselig ens" længe efter ændringen.
+   *
+   * Nu skrives kun forskellen. Er intet ændret, skrives ingenting.
+   */
   async setBookerBands(email, bandIds) {
     await this.#ready();
     const e = String(email).toLowerCase().trim();
+    const oenskede = new Set();
+    for (const b of bandIds) if (b) oenskede.add(String(b));
+
+    let tilfoejet = 0, fjernet = 0;
     this.ctx.storage.transactionSync(() => {
-      this.db.run('DELETE FROM booker_bands WHERE email = ?', e);
-      for (const b of bandIds) {
-        if (!b) continue;
+      const nuvaerende = new Set(
+        this.db.rows('SELECT band_id FROM booker_bands WHERE email = ?', e)
+          .map(r => String(r.bandId)));
+
+      for (const b of oenskede) {
+        if (nuvaerende.has(b)) continue;                 // uændret — rør den ikke
         this.db.run(
           `INSERT INTO booker_bands (email, band_id) VALUES (?, ?)
-             ON CONFLICT(email, band_id) DO NOTHING`, e, String(b));
+             ON CONFLICT(email, band_id) DO NOTHING`, e, b);
+        tilfoejet++;
+      }
+      for (const b of nuvaerende) {
+        if (oenskede.has(b)) continue;
+        this.db.run('DELETE FROM booker_bands WHERE email = ? AND band_id = ?', e, b);
+        fjernet++;
       }
     });
-    return { ok: true };
+    return { ok: true, tilfoejet, fjernet };
+  }
+
+  /** Som BandDO.writeCounter — lader selvtesten bevise at intet blev skrevet. */
+  async writeCounter() {
+    await this.#ready();
+    return Number(this.db.value('SELECT total_changes() AS c') ?? 0);
   }
 
   // Rate-limit på booker-login. Samme mønster som operatør.
