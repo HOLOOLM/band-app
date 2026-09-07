@@ -1416,5 +1416,15 @@ if (OPERATOR_MODE){
     _showBootError('Mangler band-id i URL', '<p>Tilføj <code>?band=&lt;bandId&gt;</code> til URL\'en for at åbne den korrekte band-app.</p><p style="color:#9A9285;font-size:13px">Eksempel: <code>' + location.origin + location.pathname + '?band=mit-band</code></p><p style="color:#9A9285;font-size:13px">Kontakt din administrator hvis du ikke kender bandets id.</p>');
     throw new Error('BAND_ID mangler i URL');
   }
-  bootBranding().then(tryRestore);
+  // Branding og sessionsgenskabelse er to UAFHAENGIGE netvaerkskald:
+  // bootBranding henter getConfig, tryRestore kalder /api/session, og
+  // sidstnaevnte laeser intet fra BAND_CONFIG. Koert i serie som foer kostede
+  // det to fulde rundture foer appen kunne vise noget.
+  //
+  // De startes nu samtidig. Raekkefoelgen der BETYDER noget bevares: begge
+  // afventes, og foerst derefter anvendes sessionen — enterApp() -> 
+  // prewarmAdminCaches() laeser BAND_CONFIG.booking, og applyBranding() skal
+  // vaere koert inden logo og temafarver saettes.
+  Promise.allSettled([bootBranding(), hentSession()])
+    .then(([, sess]) => anvendSession(sess.status === 'fulfilled' ? sess.value : null));
 }

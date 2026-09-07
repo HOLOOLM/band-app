@@ -219,20 +219,34 @@ function enterApp(viewMode){
 }
 
 // ─── Try restore session ─────────────────────────────────────────
-async function tryRestore(){
+// Delt i to, så boot kan hente sessionen SAMTIDIG med brandingen i stedet for
+// bagefter (se bunden af 09-boot.js). Hentningen er uafhængig af BAND_CONFIG;
+// anvendelsen er det ikke — enterApp() → prewarmAdminCaches() læser
+// BAND_CONFIG.booking, og logo/temafarver skal være sat først.
+
+/** Kun netværkskaldet. Returnerer svaret eller null; kaster aldrig. */
+async function hentSession(){
   try {
     // Session lever i en httpOnly-cookie; spørg Worker'en om den stadig er gyldig.
     const res = await fetch('/api/session', { credentials: 'same-origin' });
-    const d = await res.json().catch(()=>null);
-    if (d && d.ok){
-      SESSION = { email: (d.member && d.member.email) || '', role: d.role, member: d.member };
-      // Tjek om gemte timestamps stadig er gyldige; ellers tving fresh login
-      const restored = _restoreSessionTimestamps();
-      if (!restored){ logout(); return; }
-      if (d.forcePasswordChange){ showChangePwView(); return; }
-      enterApp();
-    }
-  } catch(e){}
+    return await res.json().catch(()=>null);
+  } catch(e){ return null; }
+}
+
+/** Anvender svaret. Skal kaldes EFTER at brandingen er på plads. */
+function anvendSession(d){
+  if (!(d && d.ok)) return;
+  SESSION = { email: (d.member && d.member.email) || '', role: d.role, member: d.member };
+  // Tjek om gemte timestamps stadig er gyldige; ellers tving fresh login
+  const restored = _restoreSessionTimestamps();
+  if (!restored){ logout(); return; }
+  if (d.forcePasswordChange){ showChangePwView(); return; }
+  enterApp();
+}
+
+/** Bevaret som ét kald for de steder der bare vil genskabe sessionen. */
+async function tryRestore(){
+  anvendSession(await hentSession());
 }
 
 // ──────────────────────────────────────────────────────────────────
