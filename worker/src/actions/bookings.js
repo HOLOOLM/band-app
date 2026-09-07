@@ -325,6 +325,17 @@ async function validerSigneringstoken(env, tokenRaw) {
 
   const row = await band.getBooking(decoded.bookingId);
   if (!row) return null;
+
+  // Tilbagekaldelse af gamle links.
+  //
+  // resendSigningLink udsteder et nyt token OG skriver setBookingTokenExp, men
+  // ingen læste feltet — gyldigheden kom udelukkende fra `exp` inde i selve
+  // tokenet. Det gamle link virkede derfor videre i sine fulde 14 dage, også
+  // efter at et nyt var sendt. Nu betyder skrivningen noget.
+  if (row.tokenExp) {
+    const udloeb = Date.parse(row.tokenExp);
+    if (Number.isFinite(udloeb) && Date.now() > udloeb) return null;
+  }
   // docHash binder tokenet til kontraktens indhold. Konstant-tid, så en
   // næsten-rigtig hash ikke kan findes ved at måle svartiden.
   if (!row.docHash || !constTimeEq(String(row.docHash), String(decoded.docHash || ''))) return null;
@@ -404,6 +415,30 @@ export async function submitArrangoerSignature(ctx) {
         html: '<p>Arrangøren <strong>' + escHtml(typedName) +
               '</strong> har underskrevet kontrakten. Den er nu godkendt.</p>',
         text: 'Arrangøren ' + typedName + ' har underskrevet kontrakten. Den er nu godkendt.'
+      });
+    }
+
+    // KVITTERING TIL ARRANGØREN.
+    //
+    // Signeringssiden har hele tiden lovet at "en kvittering er sendt til din
+    // e-mail" (public/js/sign.js), men der blev kun sendt til bandets admins.
+    // Det er ikke kun et brudt løfte: der findes ingen anden verifikation af at
+    // underskriveren ER den adresse linket blev sendt til, så en underskrift
+    // kunne ske uden at den påståede underskriver nogensinde opdagede det.
+    // Kvitteringen er den billigste form for opdagelse af misbrug.
+    const arrEmail = String(v.row.arrangoerEmail || '').trim();
+    if (arrEmail && mailConfigured(env)) {
+      await sendMail(env, {
+        to: [arrEmail],
+        subject: 'Kvittering: du har underskrevet kontrakten med ' + (s.bandName || v.bandId),
+        html: '<p>Der er registreret en elektronisk underskrift i dit navn (<strong>' +
+              escHtml(typedName) + '</strong>) på kontrakten med ' +
+              escHtml(s.bandName || v.bandId) + '.</p>' +
+              '<p>Tidspunkt: ' + escHtml(arrangoerSignature.ts) + '</p>' +
+              '<p>Var det ikke dig, så kontakt bandet med det samme.</p>',
+        text: 'Der er registreret en elektronisk underskrift i dit navn (' + typedName +
+              ') på kontrakten med ' + (s.bandName || v.bandId) + '. Tidspunkt: ' +
+              arrangoerSignature.ts + '. Var det ikke dig, så kontakt bandet med det samme.'
       });
     }
   } catch (e) {

@@ -9,7 +9,7 @@
 // afvigelsen fra originalen, hvor et gem nulstillede alle deltageres status.
 
 import { runAction } from '../actions/router.js';
-import { bandStub } from '../lib/addressing.js';
+import { bandStub, masterStub } from '../lib/addressing.js';
 import { sha256hex, newPasswordFields, pwIterations, randomBase64 } from '../lib/crypto.js';
 
 const BAND = 'selftest-c';
@@ -24,6 +24,9 @@ export async function contractChecks(ydreEnv, ok) {
   const iter = pwIterations(env);
 
   await band.syncMeta({ band_id: BAND, name: 'Kontrakt-band', status: 'active' });
+  // Bandet skal også findes i master: de uautentificerede actions kræver nu
+  // et kendt band, så en anonym ikke kan oprette et DO ved at gætte et navn.
+  await masterStub(env).createBand(BAND, 'Kontrakt-band');
   const adminHash = await sha256hex(KODE);
   const pf = await newPasswordFields(adminHash, iter);
   if (!await band.findMemberByEmail(ADMIN)) {

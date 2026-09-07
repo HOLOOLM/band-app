@@ -121,10 +121,34 @@ export async function getAllHonorar(ctx) {
 
 // ── iCal-feed ───────────────────────────────────────────────────────────────
 
+/**
+ * Hvilket band handler feed-kaldet om?
+ *
+ * Routeren gater `admin` mod `p.bandId` og sætter `ctx.bandId` derfra. Disse to
+ * actions læste `p.targetBandId` — et FELT DER ALDRIG BLEV GATET. En admin i
+ * band X kunne dermed sende `{bandId:"band-x", targetBandId:"band-y"}` og få
+ * band Y's feedToken udleveret (og med det hele deres gigkalender med
+ * adresser, get-in og noter), eller rotere det og ødelægge alle deres
+ * kalenderabonnementer.
+ *
+ * `targetBandId` findes udelukkende for operatørpanelet, som administrerer
+ * andre bands på deres vegne (se opBandFeed i public/js/09-boot.js). Derfor
+ * accepteres feltet nu kun når kalderen faktisk ER operatør; en band-admin får
+ * altid sit eget band, uanset hvad de sender.
+ */
+function feedBandId(ctx) {
+  const { p } = ctx;
+  if (ctx.operator) {
+    const maal = String(p.targetBandId || '').trim();
+    if (maal) return maal;
+  }
+  return String(ctx.bandId || '').trim();
+}
+
 /** Feed-tokenet ligger i bandets egne settings, så feedet kan læses uden master. */
 export async function getFeedUrl(ctx) {
-  const { env, p } = ctx;
-  const bandId = String(p.targetBandId || ctx.bandId || '').trim();
+  const { env } = ctx;
+  const bandId = feedBandId(ctx);
   if (!bandId) return { ok: false, error: 'bandId mangler' };
   const band = bandStub(env, bandId);
   const token = await hentEllerLavFeedToken(band);
@@ -132,8 +156,8 @@ export async function getFeedUrl(ctx) {
 }
 
 export async function rotateFeedToken(ctx) {
-  const { env, p } = ctx;
-  const bandId = String(p.targetBandId || ctx.bandId || '').trim();
+  const { env } = ctx;
+  const bandId = feedBandId(ctx);
   if (!bandId) return { ok: false, error: 'bandId mangler' };
   const band = bandStub(env, bandId);
   const token = randomId(24);
@@ -156,7 +180,26 @@ async function hentEllerLavFeedToken(band) {
 
 function icalEsc(s) {
   return String(s == null ? '' : s)
+    // \r fjernes helt: en enlig CR kunne folde en linje i DESCRIPTION og dermed
+    // injicere en iCal-egenskab. \n escapes som RFC 5545 foreskriver.
+    .replace(/\r/g, '')
     .replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\n/g, '\\n');
+}
+
+/**
+ * Findes bandet i masters bandliste?
+ *
+ * Fejler LUKKET: kan master ikke svare, behandles bandet som ukendt. Et tomt
+ * kalendersvar er langt at foretrække frem for at oprette et Durable Object på
+ * et navn en fremmed har fundet på.
+ */
+async function bandFindes(env, bandId) {
+  try {
+    return !!await masterStub(env).getBand(bandId);
+  } catch (e) {
+    console.error('Bandopslag fejlede for ' + bandId + ': ' + (e && e.message || e));
+    return false;
+  }
 }
 function icalDate(d) {
   const p = n => (n < 10 ? '0' : '') + n;
@@ -186,6 +229,14 @@ export async function buildIcal(env, bandId, token) {
 
   let band, settings;
   try {
+    // Slå bandet op i master FØR bandStub() kaldes.
+    //
+    // `idFromName()` opretter objektet ved første berøring, og #ready() lægger
+    // 24 tabeller i det permanent. Uden dette opslag kunne en anonym med
+    // `for i in $(seq 1 100000); do curl ".../ical?band=x$i"; done` efterlade
+    // 100.000 tomme SQLite-databaser på kontoen — objekter der ikke står i
+    // masters bandliste og derfor aldrig ryddes op af cron'en.
+    if (!await bandFindes(env, bandId)) return tom;
     band = bandStub(env, bandId);
     settings = await band.getSettings();
   } catch (e) {

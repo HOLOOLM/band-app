@@ -43,23 +43,29 @@ function showChangePwView(){
 
 async function doChangePassword(){
   clearErr('changePwErr');
+  const cur = document.getElementById('curPw').value;
   const a = document.getElementById('newPw1').value;
   const b = document.getElementById('newPw2').value;
-  // 6 tegn, ikke 12: DMDT's medlemmer havde 6-tegns koder i prototypen, og
-  // grænsen skal lade dem taste den samme kode igen ved det tvungne skift
-  // efter migreringen. Serveren håndhæver ingen længde — den ser kun
-  // sha256-hashet (auth.js:105) — så dette er det eneste sted reglen findes.
-  if (a.length < 6){ showErr('changePwErr','Min. 6 tegn.'); return; }
+  // Længden håndhæves nu OGSÅ serverside (worker/src/actions/auth.js). Tallet
+  // her skal matche det dér, ellers får brugeren en fejl efter at have trykket
+  // Gem i stedet for mens de skriver.
+  if (!cur){ showErr('changePwErr','Indtast din nuværende adgangskode.'); return; }
+  if (a.length < 12){ showErr('changePwErr','Min. 12 tegn.'); return; }
   if (a !== b){ showErr('changePwErr','De to felter er ikke ens.'); return; }
+  if (a === cur){ showErr('changePwErr','Den nye kode skal være forskellig fra den nuværende.'); return; }
   const btn = document.getElementById('changePwBtn');
   btn.disabled = true; btn.textContent = 'Gemmer...';
   try {
     const newHash = await sha256hex(a);
-    // Worker'en kender det gamle credential (fra session-cookien) og opdaterer det
-    // server-side — frontend sender kun det nye hash.
+    // Den NUVÆRENDE kode sendes med.
+    //
+    // Workeren indsatte før selv sessionens token som oldHash, så et stjålet
+    // sid var nok til at overtage kontoen permanent — og fordi kodeskift
+    // synkroniseres på tværs af bands, ramte overtagelsen alle brugerens bands
+    // på én gang. Re-autentificering er standardforsvaret mod netop det.
     const res = await fetch('/api/change-password', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
-      body: JSON.stringify({ newHash: newHash, bandId: BAND_ID })
+      body: JSON.stringify({ oldHash: await sha256hex(cur), newHash: newHash, bandId: BAND_ID })
     });
     const d = await res.json().catch(()=>null);
     if (!d || !d.ok){ showErr('changePwErr', (d && d.error) || 'Kunne ikke gemme.'); btn.disabled = false; btn.textContent = 'Gem'; return; }
@@ -167,6 +173,17 @@ document.addEventListener('visibilitychange', ()=>{ if (!document.hidden) _check
 function enterApp(viewMode){
   document.getElementById('loginView').style.display = 'none';
   document.getElementById('viewChooser').style.display = 'none';
+
+  // Kontakt- og rider-oplysninger. De lå før i getConfig, som er
+  // uautentificeret og driver login-skærmens branding — men kontaktpersonens
+  // navn, private telefonnummer og adresse er persondata og hører ikke til på
+  // en side enhver kan hente ved at gætte et bandId. _brandify() i
+  // 07-calendar-pdf.js læser dem fra BAND_CONFIG ved kontrakt- og
+  // rider-rendering, så de fyldes på her, efter login. Samme mønster som
+  // adminGetBillingInfo nedenfor.
+  apiPost('getBandInfo', {}).then(d => {
+    if (d && d.ok && d.config) BAND_CONFIG = Object.assign(BAND_CONFIG, d.config);
+  }).catch(() => {});
   if (SESSION.role === 'admin' && !viewMode){
     // Vis valg-skærm for admins
     document.getElementById('adminApp').style.display = 'none';

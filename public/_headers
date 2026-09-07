@@ -1,0 +1,58 @@
+# Sikkerhedsheaders på de STATISKE svar.
+#
+# Hvorfor denne fil findes: `[assets]` i worker/wrangler.toml er sat op uden
+# `run_worker_first`, så Cloudflares asset-lag svarer på /, /app.css og
+# /js/*.js UDEN at Workeren køres. `withSecHeaders()` i worker/src/worker.js
+# ramte derfor kun /api/*-svarene — altså JSON, hvor en CSP intet udretter,
+# fordi et JSON-svar ikke eksekverer scripts. Selve dokumentet, der loader al
+# JavaScript, fik ingen headers overhovedet. Målt i produktion 2026-09-07:
+#
+#   GET /            → 200 text/html, CF-Cache-Status: HIT, ingen CSP
+#   GET /api/session → 200 json, fuld CSP
+#
+# Headerne her SKAL holdes i sync med withSecHeaders(). Den funktion dækker de
+# ruter Workeren selv besvarer; denne fil dækker resten. Ændrer du den ene,
+# ændr den anden.
+#
+# Cloudflare serverer aldrig selve `_headers` — den er konfiguration, ikke et
+# aktiv.
+
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; worker-src 'self' blob: https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://api.dataforsyningen.dk https://cdnjs.cloudflare.com; frame-src https://www.google.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'
+  Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Frame-Options: DENY
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()
+  Cross-Origin-Opener-Policy: same-origin
+
+# Signeringssiden er den ENESTE flade uden login, og den er samtidig den eneste
+# der ikke bruger inline onclick-handlere — public/js/sign.js binder sine to
+# knapper med .onclick = fn i JavaScript, hvilket CSP ikke regner som inline.
+# Derfor kan netop denne side køre uden 'unsafe-inline', og uden cdnjs,
+# dataforsyningen og Google Maps, som den slet ikke bruger.
+#
+# BEGGE stier skal stå her. Workeren har en eksplicit /sign-rute der sætter den
+# samme stramme politik, men den kører aldrig: Wranglers asset-lag matcher
+# /sign mod sign.html og svarer selv, før Workeren kaldes. Målt lokalt
+# 2026-09-07 fik /sign den brede /*-politik indtil denne regel blev tilføjet.
+# Worker-ruten bliver stående som net, hvis asset-håndteringen ændrer sig.
+/sign
+  ! Content-Security-Policy
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'
+  Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Frame-Options: DENY
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()
+  Cross-Origin-Opener-Policy: same-origin
+
+/sign.html
+  ! Content-Security-Policy
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'
+  Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Frame-Options: DENY
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()
+  Cross-Origin-Opener-Policy: same-origin

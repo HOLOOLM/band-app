@@ -13,7 +13,7 @@ autoritativ på *hvor vi er*.
 | | |
 |---|---|
 | Alle faser (1–6) | **Kodet, testet og deployet** |
-| Selvtest | **513 tjek, alle grønne**, verificeret idempotent over gentagne kørsler |
+| Selvtest | **528 tjek, alle grønne**, verificeret idempotent over gentagne kørsler |
 | Kontraktrevision | **Ren** — `node worker/tools/audit-actions.mjs` |
 | Ny Worker-kode | ~10.700 linjer i 46 moduler, 78 actions |
 | `Code.gs` → sidecar | 4.762 → 219 linjer (`apps-script/Sidecar.gs`) |
@@ -22,10 +22,33 @@ autoritativ på *hvor vi er*.
 | Sidecar | Kører på det gamle Apps Script-projekt, verificeret 29/8 |
 | Operatør | Oprettet 29/8. `BOOTSTRAP_TOKEN` skal være slettet igen |
 | Bandet `dmdt` | Oprettet på det nye lag, branding + logo på plads 29/8 |
+| Sikkerhedsaudit | **Gennemført 2026-09-07** — se `SECURITY-AUDIT-2026-09-07.md` |
 | **NÆSTE** | **Efterarbejde efter migreringen — se skridt 8** |
 
 Omskiftningen er sket. Google Sheet'et er urørt og kan rulles tilbage til, men
 `Code.gs` er overskrevet af sidecaren — se skridt 6 for hvad det koster.
+
+> **Sikkerhedsauditten er gennemført OG rettelserne er lavet** (2026-09-07).
+> 32 af 39 fund er lukket; selvtesten står på 528 grønne, op fra 513.
+> `SECURITY-AUDIT-2026-09-07.md` har fundene og et statusafsnit nederst med
+> hvad der er rettet, hvad der er delvist, og hvad der bevidst er fravalgt.
+>
+> **Fire ting kræver din hånd og kan ikke gøres fra repoet:**
+> 1. `wrangler secret put BACKUP_KEY` — backups krypteres nu, men kun hvis
+>    nøglen er sat. Uden den skrives kopien stadig, med en advarsel i svaret.
+> 2. `APP_SHARED_TOKEN` som Script Property i Apps Script. Den hardkodede
+>    default er fjernet, og `_appTokenOk` fejler nu lukket uden den.
+> 3. Slet DMDT-prototypens deployment og regneark (CPR pr. medlem).
+> 4. `wrangler deploy` + `wrangler secret bulk` i den rækkefølge, jf. gotcha 4
+>    nedenfor.
+>
+> **Bemærk to adfærdsændringer ved udrulning:** session-cookien har skiftet navn
+> til `__Host-sid`, så alle bliver logget ud én gang. Og skift-kode-skærmen
+> beder nu om den nuværende adgangskode.
+>
+> **Stadig åbent:** sessionerne ligger fortsat i KV (K3 er kun delvist lukket —
+> den anonyme afbryder er væk, men flytningen til `BandDO.putSession` er en
+> selvstændig opgave). Se statusafsnittet for hvorfor.
 
 ---
 

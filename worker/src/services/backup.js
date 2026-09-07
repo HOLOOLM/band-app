@@ -32,6 +32,8 @@
 // at persondata lever et afgrænset stykke tid videre. Det tal skal kunne siges
 // højt over for bandene: "backups slettes inden for otte uger".
 
+import { encryptWithKey, decryptWithKey, isEncrypted } from '../lib/crypto.js';
+
 const PRAEFIKS = '_backups/';
 
 /** Otte uger ≈ to måneder. Ændres tallet, ændres løftet til bandene. */
@@ -56,17 +58,54 @@ export function backupKey(bandId, dato) {
 /** Skriver kopien. Datoen gemmes også i metadata, så en liste kan læses uden at hente indholdet. */
 export async function putBackup(env, bandId, dato, data) {
   const key = backupKey(bandId, dato);
-  const krop = JSON.stringify({
+  const klartekst = JSON.stringify({
     _band: bandId,
     _taget: new Date().toISOString(),
     _bemaerk: 'Ugentlig sikkerhedskopi. Indeholder persondata — ikke CPR.',
     data
   });
+
+  // KRYPTERING. Kopien indeholder medlemmernes navne, adresser, telefonnumre og
+  // e-mail for ET HELT BAND, og alle bands ligger under samme _backups/-præfiks
+  // — bevidst uden for den per-band-isolation resten af systemet bygger på.
+  // Det gør backuplaget til det ene sted hvor én kompromitteret R2-adgang eller
+  // én operatørkonto rækker til samtlige bands persondata.
+  //
+  // BACKUP_KEY er en EGEN nøgle, ikke CPR_KEY: adgang til det ene må ikke give
+  // adgang til det andet, og de skal kunne roteres uafhængigt.
+  //
+  //   wrangler secret put BACKUP_KEY      (32 bytes base64:
+  //   node -e "console.log(require('crypto').randomBytes(32).toString('base64'))")
+  //
+  // Er nøglen ikke sat, skrives kopien stadig — en manglende hemmelighed må
+  // ikke betyde at man står uden sikkerhedskopi den dag man har brug for den —
+  // men advarslen følger med i svaret, så runBackupNow viser den i
+  // operatørpanelet frem for at fejle tavst.
+  let krop = klartekst;
+  let krypteret = false;
+  let advarsel = null;
+  if (env.BACKUP_KEY) {
+    try {
+      krop = await encryptWithKey(env.BACKUP_KEY, klartekst);
+      krypteret = true;
+    } catch (e) {
+      advarsel = 'BACKUP_KEY er sat, men kunne ikke bruges (' +
+                 (e && e.message || e) + '). Kopien er gemt UKRYPTERET.';
+      console.error('Backup: ' + advarsel);
+    }
+  } else {
+    advarsel = 'BACKUP_KEY er ikke sat. Kopien er gemt ukrypteret — den ' +
+               'indeholder persondata. Sæt hemmeligheden med `wrangler secret put BACKUP_KEY`.';
+  }
+
   await env.ARCHIVE.put(key, krop, {
-    httpMetadata: { contentType: 'application/json' },
-    customMetadata: { bandId: String(bandId), dato: String(dato).slice(0, 10) }
+    httpMetadata: { contentType: krypteret ? 'application/octet-stream' : 'application/json' },
+    customMetadata: {
+      bandId: String(bandId), dato: String(dato).slice(0, 10),
+      krypteret: krypteret ? '1' : '0'
+    }
   });
-  return { ok: true, key, bytes: krop.length };
+  return { ok: true, key, bytes: krop.length, krypteret, advarsel };
 }
 
 /**
@@ -137,7 +176,14 @@ export async function getBackup(env, key) {
   if (!String(key || '').startsWith(PRAEFIKS)) return null;
   const obj = await env.ARCHIVE.get(String(key));
   if (!obj) return null;
-  return await obj.text();
+  const raw = await obj.text();
+  // Kopier fra før krypteringen blev indført ligger i klartekst og skal stadig
+  // kunne læses — ellers ville rettelsen gøre eksisterende backups ubrugelige.
+  if (!isEncrypted(raw)) return raw;
+  if (!env.BACKUP_KEY) {
+    throw new Error('Kopien er krypteret, men BACKUP_KEY er ikke sat i dette miljø.');
+  }
+  return decryptWithKey(env.BACKUP_KEY, raw);
 }
 
 /**

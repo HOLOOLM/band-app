@@ -29,11 +29,128 @@ function renderCompleted(){
   renderStatus('✓', 'Allerede underskrevet', 'Denne kontrakt er allerede underskrevet af begge parter. Du kan lukke dette vindue.');
 }
 
+// ── Kontrakt-rendering ──────────────────────────────────────────────────────
+//
+// Siden læste før `d.html`, men getSignableBooking har aldrig returneret det
+// felt — den sender `draft`. Kontraktboksen viste derfor bogstaveligt talt
+// teksten "undefined", mens der lige under stod at man ved at underskrive
+// bekræfter at have læst kontrakten ovenfor. En registreret e-signatur på et
+// dokument der aldrig blev vist er værdiløs, uanset hvor korrekt docHash er.
+//
+// Rendering sker her, klientside, ud fra draften. Det er med vilje valgt frem
+// for at lade serveren sende HTML: så findes der ingen rå innerHTML-sink på
+// appens eneste side uden login. Hvert felt går gennem escapeHtml.
+
+function fmtDato(iso){
+  if (!iso) return '—';
+  const dt = new Date(iso);
+  if (isNaN(dt)) return String(iso);
+  return dt.toLocaleDateString('da-DK', { weekday:'long', day:'numeric', month:'long', year:'numeric' });
+}
+function fmtKr(n){
+  const v = Number(n);
+  if (!Number.isFinite(v) || v === 0) return '—';
+  return v.toLocaleString('da-DK') + ' kr.';
+}
+function adresseLinje(o){
+  const dele = [o.address, [o.postnr, o.city].filter(Boolean).join(' ')].filter(Boolean);
+  return dele.join(', ');
+}
+// Én række. Udelades helt når værdien er tom, så kontrakten ikke fyldes med
+// tankestreger for felter bandet ikke har udfyldt.
+function raekke(label, vaerdi){
+  const v = String(vaerdi == null ? '' : vaerdi).trim();
+  if (!v || v === '—') return '';
+  return `<tr>
+    <th style="text-align:left;vertical-align:top;padding:6px 14px 6px 0;font-weight:500;opacity:.65;white-space:nowrap">${escapeHtml(label)}</th>
+    <td style="padding:6px 0;vertical-align:top">${escapeHtml(v)}</td>
+  </tr>`;
+}
+function afsnit(titel, raekker){
+  const indhold = raekker.filter(Boolean).join('');
+  if (!indhold) return '';
+  return `<h3 style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;opacity:.55;margin:18px 0 6px">${escapeHtml(titel)}</h3>
+    <table><tbody>${indhold}</tbody></table>`;
+}
+
+function renderKontrakt(d){
+  const k = d.draft || {};
+  const a = k.arrangoer || {};
+  const v = k.venue || {};
+
+  const spilletid = [k.showtimeFrom, k.showtimeTo].filter(Boolean).join(' – ');
+  const saet = k.sets
+    ? k.sets + ' sæt' + (k.setMinutes ? ' à ' + k.setMinutes + ' min.' : '')
+    : '';
+  const betaling = (k.paymentTerms === 'Andet' && k.paymentTermsOther)
+    ? k.paymentTermsOther : (k.paymentTerms || '');
+
+  const dele = [
+    afsnit('Aftale', [
+      raekke('Type', k.type),
+      raekke('Dato', fmtDato(k.date)),
+      raekke('Honorar', fmtKr(k.honorar)),
+      raekke('Betalingsbetingelser', betaling)
+    ]),
+    afsnit('Spillested', [
+      raekke('Navn', v.name),
+      raekke('Adresse', adresseLinje(v))
+    ]),
+    afsnit('Arrangør', [
+      raekke('Navn', a.name),
+      raekke('Kontaktperson', a.contactName),
+      raekke('Adresse', adresseLinje(a)),
+      raekke('E-mail', a.email),
+      raekke('Telefon', a.phone),
+      raekke('CVR', a.cvr)
+    ]),
+    afsnit('Tider', [
+      raekke('Get-in', k.getIn),
+      raekke('Soundcheck', k.soundcheck),
+      raekke('Spilletid', spilletid),
+      raekke('Sæt', saet)
+    ]),
+    afsnit('Omfang', [
+      raekke('Musikere', k.musicianCount),
+      raekke('Crew', k.crewCount),
+      raekke('Gæster på liste', k.guestCount)
+    ])
+  ].filter(Boolean);
+
+  // notes bevarer sine linjeskift. memberNote er bandintern og sendes aldrig
+  // hertil — se kommentaren i worker/src/actions/bookings.js.
+  const noter = String(k.notes || '').trim()
+    ? `<h3 style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;opacity:.55;margin:18px 0 6px">Noter</h3>
+       <p style="white-space:pre-wrap;margin:0">${escapeHtml(k.notes)}</p>`
+    : '';
+
+  // Bandets underskriver vises med navn og dato. Ikke e-mail: den er et
+  // bandmedlems persondata og har intet at gøre hos en ekstern arrangør.
+  const bs = d.bandSignature || {};
+  const bandsig = bs.name
+    ? `<p style="margin:18px 0 0;padding-top:14px;border-top:1px solid rgba(0,0,0,.12);font-size:12px;opacity:.7">
+         Underskrevet af bandet: ${escapeHtml(bs.name)}${bs.ts ? ' · ' + escapeHtml(fmtDato(bs.ts)) : ''}
+       </p>`
+    : '';
+
+  // Ingen felter overhovedet betyder at draften mangler. Så må der ikke
+  // underskrives — det var præcis den tilstand fejlen efterlod folk i.
+  if (!dele.length && !noter) return null;
+  return dele.join('') + noter + bandsig;
+}
+
 function renderSignable(d){
+  const kontraktHtml = renderKontrakt(d);
+  if (kontraktHtml === null){
+    renderStatus('⚠', 'Kontrakten kan ikke vises',
+      'Vi kunne ikke hente kontraktens indhold, og du bør ikke underskrive noget du ikke kan læse. ' +
+      'Kontakt bandet og bed om et nyt link.');
+    return;
+  }
   document.getElementById('signBandName').textContent = d.bandName || 'Kontrakt';
   document.getElementById('signVenueName').textContent = d.venueName || '';
   root.innerHTML = `
-    <div class="contract-box">${d.html}</div>
+    <div class="contract-box">${kontraktHtml}</div>
     <div class="card sign-panel">
       <div class="eyebrow warm">Din underskrift</div>
       <h2 class="serif" style="font-weight:400;font-size:20px;margin:6px 0 14px">Bekræft og underskriv</h2>

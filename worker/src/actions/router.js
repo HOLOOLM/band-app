@@ -33,10 +33,28 @@ export async function runAction(env, actionName, p, creds) {
     if (def.scope === 'band') {
       const bandId = String(p.bandId || '').trim();
       if (!bandId) throw userError('bandId mangler');
-      // Bemærk: bandId kommer fra request-body, men det er harmløst — stubben
-      // giver kun adgang til DET bands database, og et session-id udstedt til
-      // et andet band findes ikke deri. Isolationen afhænger altså ikke af at
-      // vi validerer bandId her.
+      // Bemærk: bandId kommer fra request-body. For ISOLATIONEN er det
+      // harmløst — stubben giver kun adgang til DET bands database, og et
+      // session-id udstedt til et andet band findes ikke deri.
+      //
+      // Men for RESSOURCERNE er det ikke harmløst: idFromName() plus det
+      // første metodekald anlægger 24 tabeller i et nyt Durable Object,
+      // permanent. På de uautentificerede actions — getConfig driver
+      // login-skærmens branding og kræver ingen session — kunne enhver anonym
+      // derfor oprette ubegrænset mange tomme databaser, som ikke står i
+      // masters bandliste og derfor aldrig ryddes op af cron'en.
+      //
+      // Derfor: kendt band påkrævet, før stubben overhovedet laves, på præcis
+      // de stier hvor kalderen endnu ikke har bevist noget. De autentificerede
+      // stier springer opslaget over, så den varme sti ikke rører master (se
+      // arkitekturreglen i planens Fase 1).
+      if (def.auth === 'public') {
+        const { masterStub } = await import('../lib/addressing.js');
+        let findes = false;
+        try { findes = !!await masterStub(env).getBand(bandId); }
+        catch (e) { findes = false; }          // fejler lukket
+        if (!findes) throw userError('Ukendt band');
+      }
       ctx.band = bandStub(env, bandId);
       ctx.bandId = bandId;
       // Lader en action opdatere operatørlistens tal i master efter en
@@ -100,11 +118,15 @@ export async function runAction(env, actionName, p, creds) {
         // hører til mindst ét band. Det forhindrer at en vilkårlig e-mail kan
         // udløse en fan-out.
         if (!creds || !creds.email || !creds.token) throw userError('Ikke logget ind');
-        const { canonicalPassword } = await import('../auth/identity.js');
-        const id = await canonicalPassword(env, creds.email);
-        if (!id) throw userError('Ikke logget ind');
+        // Slår op i identity_bands, ikke i identities. Identitetsrækken skrives
+        // nu KUN når ejeren selv har valgt en adgangskode (se registerIdentity
+        // i auth/identity.js for hvorfor seedingen blev fjernet), så den findes
+        // ikke for en musiker der endnu ikke har skiftet sin startkode.
+        // Tilknytningen er også det rigtige spørgsmål her: gaten skal kun
+        // forhindre at en vilkårlig e-mail udløser en fan-out.
+        const { identityHasBands } = await import('../auth/identity.js');
+        if (!await identityHasBands(env, creds.email)) throw userError('Ikke logget ind');
         ctx.creds = creds;
-        ctx.identity = id;
         break;
       }
 

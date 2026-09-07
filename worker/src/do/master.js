@@ -421,6 +421,33 @@ export class MasterDO extends DurableObject {
       : this.db.rows('SELECT * FROM audit_log ORDER BY ts DESC LIMIT ?', limit);
   }
 
+  /**
+   * Oprydning i master. Kaldes af den natlige cron.
+   *
+   * MasterDO havde INGEN retention overhovedet, og det er netop her væksten er
+   * værst: #penalize opretter en master_meta-række pr. forsøgt e-mail på både
+   * operatør- og booker-login, som begge er uautentificerede. En million POSTs
+   * med opdigtede adresser gav en million permanente rækker i det ene objekt
+   * alt andet skal igennem.
+   *
+   * Se runRetention i do/band.js for hvorfor prædikatet ser sådan ud;
+   * key LIKE-præfikset beskytter schema_version i samme tabel.
+   */
+  async runMasterRetention() {
+    await this.#ready();
+    let laase = 0;
+    this.ctx.storage.transactionSync(() => {
+      this.db.run(
+        `DELETE FROM master_meta
+          WHERE (key LIKE 'oplock:%' OR key LIKE 'bklock:%')
+            AND (json_valid(value) = 0
+                 OR COALESCE(json_extract(value, '$.until'), '') <= ?)`,
+        new Date().toISOString());
+      laase = this.db.changes();
+    });
+    return { ok: true, laase };
+  }
+
   async status() {
     await this.#ready();
     return {

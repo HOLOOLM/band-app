@@ -158,19 +158,89 @@ const SceneplanEditor = (function(){
       ], strokes:[], lines:[], rects:[], circles:[], texts:[] };
   }
 
+  // ---------- Validering af indlæst tilstand ----------
+  //
+  // sceneMarkup() bygger SVG med template-literals og sætter resultatet med
+  // innerHTML. Felter som color, size og id interpoleres direkte ind i
+  // attributter. Tilstanden kommer fra settings-nøglen sceneplanJson, som
+  // ENHVER band-admin kan skrive via adminWriteConfig — og den nøgle valideres
+  // ikke serverside. Uden validering her kunne en admin lægge
+  //
+  //     color: '#000" /><image href="x" onerror="..." fill="'
+  //
+  // i sin sceneplan og køre script i OPERATØRENS browser, næste gang
+  // operatøren åbnede bandets editor. Det er den største rettighedsforskel i
+  // systemet.
+  //
+  // Rettelsen sidder her frem for ved hver af de ~20 interpolationer, fordi
+  // skemaet er fast og kendt: tvinger vi hvert felt til sin rigtige type på
+  // vej ind, kan ingen af dem bære markup ud. Det beskytter samtidig mod
+  // simpelthen ødelagt JSON.
+  function vNum(v, def, min, max){
+    const n = Number(v);
+    if (!Number.isFinite(n)) return def;
+    return Math.max(min, Math.min(max, n));
+  }
+  function vHex(v, def){
+    return /^#[0-9A-Fa-f]{3,8}$/.test(String(v)) ? String(v) : def;
+  }
+  function vId(v){
+    const s = String(v == null ? '' : v);
+    return /^[A-Za-z0-9_-]{1,32}$/.test(s) ? s : uid();
+  }
+  function vText(v){ return String(v == null ? '' : v).slice(0, 2000); }
+
   function normalizeState(s){
     const base = sampleState();
     if (!s || typeof s !== 'object') return base;
-    const out = {
-      stage: (s.stage && s.stage.w && s.stage.h) ? {w:+s.stage.w, h:+s.stage.h} : base.stage,
-      elements: Array.isArray(s.elements) ? s.elements : [],
-      strokes: Array.isArray(s.strokes) ? s.strokes : [],
-      lines: Array.isArray(s.lines) ? s.lines : [],
-      rects: Array.isArray(s.rects) ? s.rects : [],
-      circles: Array.isArray(s.circles) ? s.circles : [],
-      texts: Array.isArray(s.texts) ? s.texts : [],
+    const arr = k => Array.isArray(s[k]) ? s[k] : [];
+
+    return {
+      stage: (s.stage && s.stage.w && s.stage.h)
+        ? { w: vNum(s.stage.w, base.stage.w, 1, 60), h: vNum(s.stage.h, base.stage.h, 1, 60) }
+        : base.stage,
+
+      // Ukendt type springes over i sceneMarkup alligevel; vi filtrerer her, så
+      // et ugyldigt element heller ikke ligger og fylder i tilstanden.
+      elements: arr('elements').filter(e => e && DEFS[e.type]).map(e => ({
+        id: vId(e.id), type: String(e.type),
+        x: vNum(e.x, 0, -1e4, 1e4), y: vNum(e.y, 0, -1e4, 1e4),
+        rot: vNum(e.rot, 0, -360, 360), scale: vNum(e.scale, 1, 0.05, 20),
+        label: vText(e.label)
+      })),
+
+      strokes: arr('strokes').filter(st => st && Array.isArray(st.pts)).map(st => ({
+        id: vId(st.id), color: vHex(st.color, INK), width: vNum(st.width, 3, 0.1, 100),
+        pts: st.pts.filter(p => Array.isArray(p) && p.length >= 2)
+                   .map(p => [vNum(p[0], 0, -1e4, 1e4), vNum(p[1], 0, -1e4, 1e4)])
+      })).filter(st => st.pts.length > 0),
+
+      lines: arr('lines').filter(Boolean).map(ln => ({
+        id: vId(ln.id), color: vHex(ln.color, INK), width: vNum(ln.width, 3, 0.1, 100),
+        x1: vNum(ln.x1, 0, -1e4, 1e4), y1: vNum(ln.y1, 0, -1e4, 1e4),
+        x2: vNum(ln.x2, 0, -1e4, 1e4), y2: vNum(ln.y2, 0, -1e4, 1e4),
+        arrow: !!ln.arrow
+      })),
+
+      rects: arr('rects').filter(Boolean).map(rc => ({
+        id: vId(rc.id), color: vHex(rc.color, INK), width: vNum(rc.width, 3, 0.1, 100),
+        x: vNum(rc.x, 0, -1e4, 1e4), y: vNum(rc.y, 0, -1e4, 1e4),
+        w: vNum(rc.w, 10, 0, 1e4), h: vNum(rc.h, 10, 0, 1e4),
+        fill: !!rc.fill
+      })),
+
+      circles: arr('circles').filter(Boolean).map(c => ({
+        id: vId(c.id), color: vHex(c.color, INK), width: vNum(c.width, 3, 0.1, 100),
+        x: vNum(c.x, 0, -1e4, 1e4), y: vNum(c.y, 0, -1e4, 1e4),
+        r: vNum(c.r, 10, 0, 1e4), fill: !!c.fill
+      })),
+
+      texts: arr('texts').filter(Boolean).map(t => ({
+        id: vId(t.id), color: vHex(t.color, INK),
+        x: vNum(t.x, 0, -1e4, 1e4), y: vNum(t.y, 0, -1e4, 1e4),
+        size: vNum(t.size, 18, 1, 400), text: vText(t.text), border: !!t.border
+      }))
     };
-    return out;
   }
 
   // ---------- Instans-fabrik ----------

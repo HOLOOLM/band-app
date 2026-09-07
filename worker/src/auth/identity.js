@@ -72,24 +72,64 @@ export async function syncPasswordAcrossBands(env, email, pf, undtagenBandId) {
 }
 
 /**
- * Registrerer at en e-mail hører til et band, og seeder identitetskortet hvis
- * det ikke findes.
+ * Registrerer at en e-mail hører til et band.
  *
  * Overskriver ALDRIG en eksisterende identitets password: musikeren har allerede
  * et password der virker i sine andre bands, og det skal fortsat virke her.
  * Returnerer om identiteten fandtes i forvejen, så kalderen kan sige det rigtige
  * til admin — "koden er X" er forkert, hvis personen beholder sin gamle.
+ *
+ * SIKKERHED — hvorfor der IKKE længere seedes et password her:
+ *
+ * Funktionen skrev før identitetskortet med den midlertidige kode kalderen lige
+ * havde genereret, hvis kortet ikke fandtes. Det gjorde en ADMIN-VALGT kode
+ * kanonisk for personen på tværs af hele systemet, og gav denne overtagelse:
+ *
+ *   1. Mallory er admin i band X. Hun opretter offer@bandy.dk som medlem hos
+ *      sig. Personen findes ikke i systemet endnu, så identitetskortet seedes
+ *      med DEN kode Mallory selv fik udleveret i svaret.
+ *   2. Måneder senere onboarder band Y personen helt normalt. saveMember ser
+ *      `havdeIdentitetFoer = true` og kopierer — helt efter hensigten — den
+ *      kanoniske hash ind i band Y, uden tvunget kodeskift.
+ *   3. Mallory logger ind i band Y som offeret, med den kode hun selv kender.
+ *
+ * Angrebet overlever både en band-lokal nulstilling og et bandbundet token,
+ * fordi der aldrig nulstilles eller skiftes band undervejs. Invarianten der
+ * lukker det er:
+ *
+ *     En admin-genereret midlertidig kode må ALDRIG blive den kanoniske
+ *     identitets-hash.
+ *
+ * Efter denne ændring skrives `identities`-rækken kun af
+ * syncPasswordAcrossBands, som kun kaldes fra changePassword — altså kun når
+ * ejeren selv har valgt koden. Det gør samtidig `havdeIdentitetFoer` sandere:
+ * feltet betyder nu "personen har selv valgt en adgangskode", og det er præcis
+ * den betingelse hvorunder kopieringen i members.js er legitim.
+ *
+ * `identity_bands` skrives stadig — tilknytningen er uafhængig af password.
  */
-export async function registerIdentity(env, email, bandId, pf) {
+export async function registerIdentity(env, email, bandId) {
   const e = String(email || '').toLowerCase().trim();
   if (!e) return { ok: false, error: 'email mangler' };
   const master = masterStub(env);
   const eksisterende = await master.getIdentity(e);
-  if (!eksisterende && pf) {
-    await master.putIdentity(e, pf.passwordHash, pf.pwSalt);
-  }
   await master.addIdentityBand(e, bandId);
   return { ok: true, havdeIdentitetFoer: !!eksisterende, identitet: eksisterende };
+}
+
+/**
+ * Hører e-mailen til mindst ét aktivt band?
+ *
+ * Bruges af routerens `identity`-gate. Den slog før op i `identities`, men den
+ * række findes først efter personens FØRSTE selvvalgte kodeskift, nu hvor
+ * registerIdentity ikke længere seeder. Tilknytningen er det rigtige spørgsmål
+ * alligevel: gaten skal forhindre at en vilkårlig e-mail udløser en fan-out,
+ * ikke afgøre om personen har skiftet kode.
+ */
+export async function identityHasBands(env, email) {
+  const master = masterStub(env);
+  const bands = await master.bandsForIdentity(String(email || '').toLowerCase().trim(), false);
+  return bands.length > 0;
 }
 
 /**

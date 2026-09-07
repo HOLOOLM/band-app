@@ -11,7 +11,7 @@
 // tom kolonne og en brugbar fejlbesked, aldrig en væltet jobliste.
 
 import { runAction } from '../actions/router.js';
-import { bandStub } from '../lib/addressing.js';
+import { bandStub, masterStub } from '../lib/addressing.js';
 import { sha256hex, newPasswordFields, pwIterations, randomBase64 } from '../lib/crypto.js';
 import { wantsReturnHome, normalizeAddr, venueAddress, readCachedDistance } from '../lib/distance.js';
 
@@ -30,6 +30,9 @@ export async function jobChecks(ydreEnv, ok) {
   const hash = await sha256hex(KODE);
 
   await band.syncMeta({ band_id: BAND, name: 'Job-band', status: 'active' });
+  // Bandet skal også findes i master: de uautentificerede actions kræver nu
+  // et kendt band, så en anonym ikke kan oprette et DO ved at gætte et navn.
+  await masterStub(env).createBand(BAND, 'Job-band');
   for (const [id, email, role] of [['d-a', ADMIN, 'admin'], ['d-m', MEDLEM, 'member']]) {
     const pf = await newPasswordFields(hash, iter);
     if (!await band.findMemberById(id)) {

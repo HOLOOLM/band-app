@@ -11,10 +11,12 @@
 
 import { verifyHash, needsRehash, newPasswordFields, pwIterations, sha256hex }
   from '../lib/crypto.js';
-import { issueToken } from '../lib/tokens.js';
+import { issueToken, authFingerprint } from '../lib/tokens.js';
+import { dummyVerify } from '../auth/verify.js';
 import { masterStub, bandStub, fanOut } from '../lib/addressing.js';
 import { sendMail, mailConfigured } from '../services/mail.js';
 import { genTempPassword } from './members.js';
+import { weakPasswordError } from '../lib/weak-passwords.js';
 
 const BOOKER_TOKEN_TTL_SEC = 8 * 60 * 60;
 const LOGIN_MAX_ATTEMPTS = 5;
@@ -49,7 +51,15 @@ export async function bookerLogin(ctx) {
   };
 
   const b = await master.getBooker(email);
-  if (!b || (b.status || 'active') !== 'active') return fejl();
+  if (!b || (b.status || 'active') !== 'active') {
+    // Betal samme KDF-pris som en kendt, aktiv booker. Uden dette returnerer en
+    // ukendt adresse straks, mens en kendt koster PW_ITERATIONS runder PBKDF2 —
+    // og så er den generiske fejltekst ovenfor ligegyldig, for svartiden
+    // afslører alligevel om bureauet har en konto. Filens eget hoved lover
+    // udtrykkeligt at det ikke kan afgøres.
+    await dummyVerify(env, String(p.passwordHash || ''));
+    return fejl();
+  }
   if (!await verifyHash(String(p.passwordHash || ''), b.pwSalt, b.passwordHash)) return fejl();
 
   const maal = pwIterations(env);
@@ -59,7 +69,14 @@ export async function bookerLogin(ctx) {
   }
 
   await master.clearBookerLoginAttempts(email);
-  const token = await issueToken(env, 'booker', { email }, BOOKER_TOKEN_TTL_SEC);
+  // pwFp binder tokenet til den adgangskode der gjaldt da det blev udstedt —
+  // samme mekanik som medlems-tokenet. Uden det overlevede et token baade en
+  // nulstilling af bookerens kode OG en deaktivering af kontoen i op til otte
+  // timer, saa en frataget booker kunne blive ved med at sende tilbud.
+  const token = await issueToken(env, 'booker', {
+    email,
+    pwFp: await authFingerprint(sha256hex, b.passwordHash)
+  }, BOOKER_TOKEN_TTL_SEC);
   return {
     ok: true,
     token,
@@ -245,6 +262,43 @@ export async function bookerCancelOffer(ctx) {
     booker.email, String(p.reason || '').slice(0, 500));
   if (!t.ok) return t;
   return { ok: true, offer: parseOffer(t.booking) };
+}
+
+/**
+ * bookerChangePassword — bookeren skifter sin egen adgangskode.
+ *
+ * Fandtes ikke. operatorSaveBooker satte `forcePasswordChange: 1` på nye
+ * bookere, men der var ingen action der kunne rydde flaget, og
+ * /api/change-password afviste alt andet end medlemmer. En booker sad derfor
+ * permanent på den engangskode operatøren læste op i telefonen.
+ */
+export async function bookerChangePassword(ctx) {
+  const { env, booker, p } = ctx;
+  const master = masterStub(env);
+  const b = await master.getBooker(booker.email);
+  if (!b) return { ok: false, error: 'Kontoen findes ikke' };
+
+  if (!await verifyHash(String(p.oldHash || ''), b.pwSalt, b.passwordHash)) {
+    return { ok: false, error: 'Den nuværende adgangskode passer ikke.' };
+  }
+  const ny = String(p.newHash || '');
+  if (!/^[0-9a-f]{64}$/.test(ny)) return { ok: false, error: 'Ugyldig ny adgangskode.' };
+  if (ny === String(p.oldHash || '')) {
+    return { ok: false, error: 'Den nye adgangskode skal være forskellig fra den nuværende.' };
+  }
+  const svag = weakPasswordError(ny);
+  if (svag) return { ok: false, error: svag };
+
+  const pf = await newPasswordFields(ny, pwIterations(env));
+  await master.putBookerPassword(booker.email, pf.passwordHash, pf.pwSalt, 0);
+
+  // Nyt token: pwFp i det gamle peger på den gamle hash, så det er dødt nu.
+  // Uden et nyt ville bookeren blive logget ud af sin egen handling.
+  const token = await issueToken(env, 'booker', {
+    email: booker.email,
+    pwFp: await authFingerprint(sha256hex, pf.passwordHash)
+  }, BOOKER_TOKEN_TTL_SEC);
+  return { ok: true, token };
 }
 
 // ── Operatørens administration af bookere ───────────────────────────────────

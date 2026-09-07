@@ -40,12 +40,17 @@ crons = ["0 2 * * *"]
 # flag og ikke et big bang: bandenes rigtige data ligger i Apps Scripts Google
 # Sheet, og et ubetinget skift ville vise dem en TOM app.
 #
-#   "sheets"          alle bands på Apps Script (nuværende, sikker standard)
+#   "sheets"          alle bands på Apps Script
 #   "do:dmdt"         KUN dmdt på Durable Objects, resten på Apps Script
-#   "do"              alle bands på Durable Objects
+#   "do"              alle bands på Durable Objects (NUVÆRENDE)
 #
-# Skift ét band ad gangen, og kun når bandets data er lagt ind i det nye lag.
-# Tilbagerulning er den samme ændring i modsat retning.
+# ADVARSEL — tilbagerulningsstien er IKKE længere en simpel flagændring.
+# Apps Script-projektet kører nu sidecaren (apps-script/Sidecar.gs), som har
+# overskrevet Code.gs på samme /exec-URL. Sætter man BACKEND tilbage til
+# "sheets", rammer action-kaldene sidecaren, som ikke kender dem, og alt
+# fejler. En reel tilbagerulning kræver at Code.gs gen-deployes FØRST — og
+# derefter at APP_SHARED_TOKEN sættes som Script Property, da den hardkodede
+# default er fjernet (den lå i git og var offentligt kendt).
 BACKEND = "do"
 # Password-KDF. 10000 er verificeret i produktion 2026-08-27: et enkelt hash
 # ved 10.000 iterationer gennemføres uden at Cloudflare dræber requesten, altså
@@ -104,6 +109,23 @@ SIDECAR_URL = "https://script.google.com/macros/s/AKfycbzc3u_E4EIZLZXiDoJfSAZyHS
 # Bucket'en må ALDRIG gøres offentlig og må ikke have et r2.dev-domæne. Selvom
 # arkivkopien er CPR-fri, er en honorarafregning stadig persondata, og adgangen
 # skal gå gennem /api/faktura-arkiv, som kræver login med admin-rolle.
+# ── SIKKERHEDSKOPIER ───────────────────────────────────────────────────────
+# BACKUP_KEY (hemmelighed, 32 bytes base64) krypterer den ugentlige kopi før
+# den skrives til R2. Kopien indeholder et helt bands medlemsdata — navne,
+# adresser, telefonnumre, e-mail — og alle bands ligger under samme
+# _backups/-præfiks, uden for den per-band-isolation resten af systemet har.
+#
+# EGEN nøgle, ikke CPR_KEY: adgang til det ene må ikke give adgang til det
+# andet, og de skal kunne roteres uafhængigt.
+#
+#   node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+#   wrangler secret put BACKUP_KEY
+#
+# Er den ikke sat, skrives kopien stadig — man skal ikke stå uden backup den
+# dag man har brug for den — men svaret fra runBackupNow bærer en advarsel.
+# Bemærk: mister man nøglen, kan krypterede kopier ikke læses. Opbevar den
+# samme sted som MASTER_SECRET og CPR_KEY.
+
 [[r2_buckets]]
 binding = "ARCHIVE"
 bucket_name = "band-app-arkiv"

@@ -241,8 +241,23 @@ export async function pdfChecks(ydreEnv, ok) {
   await band.trackLogin('f-a', ADMIN, 'gammel-browser');
   await band.putDistanceCache('gammel|rute', 'a', 'b', 10);
 
+  // Lockout-rækker: én udløbet, én aktiv. Oprydningen skal tage den første og
+  // lade den anden stå.
+  //
+  // Prædikatet bruger json_extract, og SQLite'ens JSON1-udvidelse er IKKE
+  // noget vi bør antage er til stede i Durable Objects — hvis den mangler,
+  // kaster DELETE'en og hele retention-kørslen fejler. Derfor testes det, frem
+  // for at opdage det i produktion en nat kl. 02.
+  await band.penalizeLogin('udloebet-laas@test.dk', 5, -100);
+  await band.penalizeLogin('aktiv-laas@test.dk', 5, 900);
+
   const r1 = await band.runRetention(null, null);
   ok('retention: rydder udløbne sessioner', r1.sessioner >= 1, r1.sessioner + ' ryddet');
+  ok('retention: rydder udløbne lockout-rækker (json_extract virker i DO-SQLite)',
+     r1.laase >= 1, String(r1.laase) + ' ryddet');
+  ok('retention: aktiv lockout-række bevares',
+     (await band.loginAttemptState('aktiv-laas@test.dk', 5, 900)).attempts >= 1);
+  await band.clearLoginAttempts('aktiv-laas@test.dk');
   ok('retention: aktiv session bevares',
      (await band.getSession('ryd-aktiv')) !== null);
   ok('retention: login-log bevares når politikken er tom (behold alt)',

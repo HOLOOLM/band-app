@@ -68,6 +68,26 @@ export const PUBLIC_CONFIG_KEYS = [
   'borderColor',
   'textColorDim',
   'textColorMute',
+];
+
+/**
+ * Nøgler ethvert MEDLEM må læse, men som ikke hører til på login-skærmen.
+ *
+ * Kontakt- og teknikpersonens navn, private telefonnummer og adresse lå før i
+ * PUBLIC_CONFIG_KEYS. getConfig kræver ingen session — den driver
+ * login-skærmens branding — så alt på den liste kunne hentes af enhver der
+ * kendte eller gættede et bandId, og bandId'erne er ifølge lib/addressing.js
+ * "stabile og menneskeligt læsbare". Det er persondata under GDPR, og
+ * login-skærmen har aldrig haft brug for dem: den viser navn, farver, font og
+ * logo.
+ *
+ * riderTemplates følger med hertil af samme grund — det er bandets interne
+ * tekster, ikke branding.
+ *
+ * Kontrakt- og rider-renderingen i frontenden bruger felterne, og henter dem
+ * nu med getBandInfo efter login. Se actions/auth.js.
+ */
+export const MEMBER_CONFIG_KEYS = [
   'contactName',
   'contactEmail',
   'contactPhone',

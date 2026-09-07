@@ -9,7 +9,8 @@
 // glemt gate er en åben dør. Her kan en action ikke registreres uden at erklære
 // sin gate, og routeren nægter at køre en action med ukendt auth-værdi.
 
-import { login, refreshSession, changePassword, trackLogin, getConfig } from './auth.js';
+import { login, refreshSession, changePassword, trackLogin, getConfig, getBandInfo }
+  from './auth.js';
 import {
   getMembers, saveMember, deleteMember, resetPassword,
   memberUpdateProfile, exportMyData
@@ -48,7 +49,7 @@ import {
   getSignableBooking, submitArrangoerSignature, declineByArrangoer
 } from './bookings.js';
 import {
-  bookerLogin, bookerGetBands, bookerListOffers, bookerSaveOffer,
+  bookerLogin, bookerChangePassword, bookerGetBands, bookerListOffers, bookerSaveOffer,
   bookerSendOffer, bookerCancelOffer,
   operatorListBookers, operatorSaveBooker, operatorDeleteBooker,
   operatorResetBookerPassword
@@ -77,6 +78,10 @@ export const ACTIONS = {
   refreshSession: { scope: 'band', auth: 'public', fn: refreshSession },
   changePassword: { scope: 'band', auth: 'public', fn: changePassword },
   getConfig:      { scope: 'band', auth: 'public', fn: getConfig },
+  // Kontakt- og rider-oplysninger. Adskilt fra getConfig, fordi den er
+  // uautentificeret og derfor ikke må udlevere persondata om kontaktpersoner.
+  // Se MEMBER_CONFIG_KEYS i lib/settings-defaults.js.
+  getBandInfo:    { scope: 'band', auth: 'member', fn: getBandInfo },
   trackLogin:     { scope: 'band', auth: 'member', fn: trackLogin },
 
   // ── Fase 3b ──────────────────────────────────────────────────────────────
@@ -207,6 +212,9 @@ export const ACTIONS = {
 
   // ── Fase 3h ──────────────────────────────────────────────────────────────
   bookerLogin:       { scope: 'none',   auth: 'public',   fn: bookerLogin },
+  // Bookeren skifter sin egen kode. Fandtes ikke, saa forcePasswordChange
+  // var et doedt flag og bookere sad fast paa operatoerens engangskode.
+  bookerChangePassword: { scope: 'master', auth: 'booker', fn: bookerChangePassword },
   bookerGetBands:    { scope: 'none',   auth: 'booker',   fn: bookerGetBands },
   bookerListOffers:  { scope: 'none',   auth: 'booker',   fn: bookerListOffers },
   bookerSaveOffer:   { scope: 'none',   auth: 'booker',   fn: bookerSaveOffer },

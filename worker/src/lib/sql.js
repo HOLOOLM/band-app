@@ -35,6 +35,29 @@ export function objToSnake(obj) {
  * Bemærk at forespørgsler her er synkrone og kører i samme proces som dataen —
  * der er ingen netværkstur, så `await` er hverken nødvendigt eller ønskeligt.
  */
+/**
+ * Tabel- og kolonnenavne SKAL være rene identifiers.
+ *
+ * insert() og update() er de eneste to steder i kodebasen hvor SQL bygges med
+ * strengsammensætning: kolonnenavnene kommer fra objektets nøgler og kan ikke
+ * bindes som parametre. Alle nuværende kaldere bygger objektet med litterale
+ * nøgler, så der er ingen vej fra en request hertil i dag — men konstruktionen
+ * er den eneste i systemet der OVERHOVEDET kunne blive til SQL-injection, hvis
+ * nogen en dag sender et råt request-body ind. En nøgle som
+ *
+ *     "x = 1, role = 'admin' --"
+ *
+ * ville ellers blive til SQL. Tjekket koster ingenting og lukker vejen
+ * permanent, frem for at hvile på at hver fremtidig kalder husker det.
+ */
+function kunIdentifiers(table, cols) {
+  const gyldig = /^[A-Za-z_][A-Za-z0-9_]*$/;
+  if (!gyldig.test(String(table))) throw new Error('Ugyldigt tabelnavn');
+  for (const c of cols) {
+    if (!gyldig.test(String(c))) throw new Error('Ugyldigt kolonnenavn: ' + c);
+  }
+}
+
 export class Db {
   constructor(sqlStorage) {
     this.sql = sqlStorage;
@@ -81,6 +104,7 @@ export class Db {
     const snake = objToSnake(obj);
     const cols = Object.keys(snake);
     if (!cols.length) throw new Error('insert() uden felter');
+    kunIdentifiers(table, cols);
     const q = `INSERT INTO ${table} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`;
     return this.run(q, ...cols.map(c => snake[c]));
   }
@@ -94,6 +118,7 @@ export class Db {
     const snake = objToSnake(obj);
     const cols = Object.keys(snake);
     if (!cols.length) throw new Error('update() uden felter');
+    kunIdentifiers(table, cols);
     const q = `UPDATE ${table} SET ${cols.map(c => c + ' = ?').join(', ')} WHERE ${where}`;
     this.sql.exec(q, ...cols.map(c => snake[c]), ...whereParams);
     return this.changes();

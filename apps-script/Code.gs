@@ -140,10 +140,21 @@ const MEMBER_TOKEN_TTL_SEC = 8 * 60 * 60;               // medlems-token (se _is
 
 // Delt app-token (lavt sikkerhedsniveau): bremser casual scraping/abuse af det
 // offentlige /exec-endpoint. Værdien er bevidst synlig i index.html — den
-// ERSTATTER IKKE token-/password-auth, men kræver at en kalder kender den faste
-// streng. Kan roteres ved at sætte Script Property APP_SHARED_TOKEN; ellers
-// bruges denne default. Samme værdi skal stå i index.html (APP_TOKEN).
-const APP_TOKEN_DEFAULT = 'bandapp-shared-7f3a9c2e8b14d05f';
+// ERSTATTER IKKE token-/password-auth, men kræver at en kalder kender en delt
+// hemmelighed. Værdien SKAL sættes som Script Property APP_SHARED_TOKEN.
+//
+// Der var før en hardkodet default her. Den blev committet i projektets aller-
+// første commit, står stadig i git-historikken, og koden erkendte selv at den
+// var "synlig i denne offentlige kildekode" — mens rotationen aldrig blev kørt.
+// Den var altså i praksis den eneste barriere mellem internettet og hele
+// backenden, og alle der nogensinde har set repoet kender den.
+//
+// Der er ingen fallback længere: uden Script Property'en afvises ALT. Det er
+// med vilje — en manglende hemmelighed skal fejle højlydt, ikke stille falde
+// tilbage på en offentligt kendt værdi.
+//
+// Behandl den gamle værdi som permanent brændt; en historik-rewrite fjerner den
+// ikke fra de kloner der allerede findes.
 
 let CURRENT_BAND_ID = ''; // sættes per request af handle()
 
@@ -561,8 +572,20 @@ function _forceCalcDistance(att, contract, memberHomeAddress) {
 function doGet(e) {
   // iCal-feed er en capability-URL (token i query) der skal returnere RÅ text/calendar —
   // ikke JSON. Derfor afskæres den FØR handle()/respond() (som tvinger JSON).
+  // Den har sin egen auth i form af feed-tokenet.
   if (e && e.parameter && e.parameter.action === 'ical') {
     return actIcalFeed(e.parameter);
+  }
+  // ALT ANDET kræver den delte app-token, præcis som doPost.
+  //
+  // doGet sprang tjekket helt over. Deploymentet kører med
+  // access: ANYONE_ANONYMOUS, så hele action-routeren kunne nås over GET uden
+  // nogen hemmelighed overhovedet — fx ?action=login&email=…&password=… — og
+  // svaret kunne læses fra en vilkårlig hjemmeside via ?callback=.
+  // Rolletjek og per-e-mail-lockout fandtes stadig, men Workerens per-IP-loft
+  // gjorde ikke, og Apps Script ser ikke klientens IP.
+  if (!_appTokenOk(e && e.parameter)) {
+    return respond({ ok: false, error: 'Adgang nægtet' });
   }
   return handle(e.parameter);
 }
@@ -577,14 +600,21 @@ function doPost(e) {
   // (params.appToken) i stedet for som X-App-Token-header. Bremser casual
   // scraping; erstatter ikke password-/operatør-auth længere nede.
   if (!_appTokenOk(params)) {
-    return respond({ ok: false, error: 'Adgang nægtet' }, params.callback);
+    return respond({ ok: false, error: 'Adgang nægtet' });
   }
   return handle(params);
 }
 
 /** Konstant-tids sammenligning af den delte app-token. */
 function _appTokenOk(params) {
-  const expected = PropertiesService.getScriptProperties().getProperty(PROP_APP_TOKEN) || APP_TOKEN_DEFAULT;
+  const expected = PropertiesService.getScriptProperties().getProperty(PROP_APP_TOKEN) || '';
+  // Fejl LUKKET hvis hemmeligheden ikke er sat. Tidligere faldt den tilbage på
+  // en hardkodet default, hvilket betød at et uopsat projekt var åbent for
+  // enhver der havde læst kildekoden.
+  if (!expected) {
+    console.error('APP_SHARED_TOKEN er ikke sat som Script Property — alle kald afvises.');
+    return false;
+  }
   const got = String((params && params.appToken) || '');
   if (got.length !== expected.length) return false;
   let diff = 0;
@@ -642,7 +672,7 @@ function handle(p) {
         case 'operatorDeleteBooker':       result = actOperatorDeleteBooker(p); break;
         case 'operatorResetBookerPassword': result = actOperatorResetBookerPassword(p); break;
       }
-      return respond(result, p.callback);
+      return respond(result);
     }
 
     // Tværgående actions: ingen enkelt bandId — identitets-/SSO-valideret indeni
@@ -651,7 +681,7 @@ function handle(p) {
         case 'getAllJobs':    result = actGetAllJobs(p); break;
         case 'getAllHonorar': result = actGetAllHonorar(p); break;
       }
-      return respond(result, p.callback);
+      return respond(result);
     }
 
     if (PUBLIC_TOKEN_ACTIONS[action]) {
@@ -660,7 +690,7 @@ function handle(p) {
         case 'submitArrangoerSignature':  result = actSubmitArrangoerSignature(p); break;
         case 'declineByArrangoer':        result = actDeclineByArrangoer(p); break;
       }
-      return respond(result, p.callback);
+      return respond(result);
     }
 
     // Booker-tilbudsflow (Fase C): bt:-token-valideret indeni, ikke bandId-gatet
@@ -672,12 +702,12 @@ function handle(p) {
         case 'bookerSendOffer':   result = actBookerSendOffer(p); break;
         case 'bookerCancelOffer': result = actBookerCancelOffer(p); break;
       }
-      return respond(result, p.callback);
+      return respond(result);
     }
 
     // Alle andre actions kræver bandId → set CURRENT_BAND_ID
     if (!p.bandId) {
-      return respond({ ok: false, error: 'bandId mangler i request' }, p.callback);
+      return respond({ ok: false, error: 'bandId mangler i request' });
     }
     _loadTenant(p.bandId); // smider hvis ukendt
     CURRENT_BAND_ID = String(p.bandId);
@@ -756,16 +786,18 @@ function handle(p) {
       ? { ok: false, error: String(err.message) }
       : { ok: false, error: 'Der opstod en serverfejl. Prøv igen — fejlen er logget.' };
   }
-  return respond(result, p.callback);
+  return respond(result);
 }
 
-function respond(obj, callback) {
-  const json = JSON.stringify(obj);
-  if (callback) {
-    return ContentService.createTextOutput(callback + '(' + json + ')')
-      .setMimeType(ContentService.MimeType.JAVASCRIPT);
-  }
-  return ContentService.createTextOutput(json)
+function respond(obj) {
+  // JSONP-grenen er fjernet.
+  //
+  // Med ?callback=fn svarede endpointet med MimeType.JAVASCRIPT, altså et
+  // eksekverbart script. Det gjorde det muligt for en vilkårlig hjemmeside at
+  // læse svaret på tværs af origins med en <script>-tag og dermed omgå
+  // browserens same-origin-politik helt. Frontenden bruger fetch mod Workeren
+  // og har aldrig haft brug for det.
+  return ContentService.createTextOutput(JSON.stringify(obj))
     .setMimeType(ContentService.MimeType.JSON);
 }
 

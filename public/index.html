@@ -72,8 +72,9 @@
     <h1 class="serif">Vælg ny adgangskode</h1>
     <p class="lede">Du bruger en midlertidig kode. Sæt din egen for at fortsætte.</p>
     <div id="changePwErr" class="login-err"></div>
-    <div class="field" style="margin-bottom:12px"><label>Ny adgangskode</label><input id="newPw1" class="input" type="password" placeholder="Min. 6 tegn"></div>
-    <div class="field" style="margin-bottom:18px"><label>Gentag ny adgangskode</label><input id="newPw2" class="input" type="password"></div>
+    <div class="field" style="margin-bottom:12px"><label>Nuværende adgangskode</label><input id="curPw" class="input" type="password" placeholder="Den kode du loggede ind med" autocomplete="current-password"></div>
+    <div class="field" style="margin-bottom:12px"><label>Ny adgangskode</label><input id="newPw1" class="input" type="password" placeholder="Min. 12 tegn" autocomplete="new-password"></div>
+    <div class="field" style="margin-bottom:18px"><label>Gentag ny adgangskode</label><input id="newPw2" class="input" type="password" autocomplete="new-password"></div>
     <button id="changePwBtn" class="btn btn-primary btn-lg" style="width:100%;justify-content:center">Gem</button>
   </div>
 </div>

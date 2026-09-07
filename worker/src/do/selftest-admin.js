@@ -98,6 +98,28 @@ export async function adminChecks(ydreEnv, ok) {
   const dublet = await kald('registerTenant', { bandId: A, bandName: 'Igen' }, opCreds);
   ok('registerTenant: dublet band-id afvises', dublet.ok === false, dublet.error);
 
+  // Musikeren vælger sin EGEN kode med det samme, og resten af denne fil bruger
+  // den frem for operatørens startkode.
+  //
+  // Det er ikke kosmetik. En admin- eller operatør-genereret startkode bliver
+  // ikke længere den kanoniske identitets-hash (se registerIdentity i
+  // auth/identity.js), fordi det var vejen til kontoovertagelse på tværs af
+  // bands. Kryds-band-blokken længere nede logger ind i band B med denne
+  // musikers kode, og det virker kun — og skal kun virke — når det er en kode
+  // ejeren selv har valgt.
+  await bandStub(env, A).clearLoginAttempts(MUSIKER);
+  const musikerHash = await sha256hex('kryds-musiker-egen-kode-2026');
+  const foersteLogin = await kald('login',
+    { bandId: A, email: MUSIKER, passwordHash: await sha256hex(nyA.seedPassword) });
+  const egenKode = await kald('changePassword', {
+    bandId: A, email: MUSIKER,
+    oldHash: await sha256hex(nyA.seedPassword),
+    newHash: musikerHash
+  });
+  ok('registerTenant: admin kan skifte til sin egen kode',
+     foersteLogin.ok === true && egenKode.ok === true,
+     foersteLogin.error || egenKode.error);
+
   // ── Operatøren skal kunne betjene sit eget panel ─────────────────────────
   // Operatøren er ikke medlem af noget band og har ingen medlems-session.
   // adminReadConfig, adminWriteConfig, adminUploadAsset, getFeedUrl og
@@ -324,9 +346,13 @@ export async function adminChecks(ydreEnv, ok) {
   // Og det er spejlingen der faktisk blokerer login.
   await bandA.clearLoginAttempts(MUSIKER);
   const loginSuspenderet = await kald('login',
-    { bandId: A, email: MUSIKER, passwordHash: await sha256hex(nyA.seedPassword) });
-  ok('setTenantStatus: suspendering blokerer login',
-     loginSuspenderet.ok === false && /deaktiveret/.test(loginSuspenderet.error),
+    { bandId: A, email: MUSIKER, passwordHash: musikerHash });
+  // Blokeringen skal virke, men beskeden må ikke røbe at bandet er
+  // suspenderet — den kom før enhver credential-kontrol og var derfor et
+  // orakel på bandets tilstand for enhver der kendte et bandId.
+  ok('setTenantStatus: suspendering blokerer login (uden at røbe hvorfor)',
+     loginSuspenderet.ok === false &&
+     /Forkert email eller adgangskode/.test(String(loginSuspenderet.error || '')),
      loginSuspenderet.error);
 
   await kald('setTenantStatus', { targetBandId: A, status: 'active' }, opCreds);
@@ -347,7 +373,7 @@ export async function adminChecks(ydreEnv, ok) {
   // ── Settings og udseende (3i) ───────────────────────────────────────────
   await bandA.clearLoginAttempts(MUSIKER);
   const adminLogin = await kald('login',
-    { bandId: A, email: MUSIKER, passwordHash: await sha256hex(nyA.seedPassword) });
+    { bandId: A, email: MUSIKER, passwordHash: musikerHash });
   ok('3i-opsætning: band-admin kan logge ind', adminLogin.ok === true, adminLogin.error);
   const aCreds = { email: MUSIKER, token: adminLogin.memberToken };
   const kaldA = (a, p) => runAction(env, a, Object.assign({ bandId: A }, p), aCreds);
@@ -530,7 +556,7 @@ export async function adminChecks(ydreEnv, ok) {
     const m = await stub.findMemberByEmail(MUSIKER);
     await stub.clearLoginAttempts(MUSIKER);
     const lg = await runAction(env, 'login',
-      { bandId: bid, email: MUSIKER, passwordHash: await sha256hex(nyA.seedPassword) });
+      { bandId: bid, email: MUSIKER, passwordHash: musikerHash });
     await runAction(env, 'saveContract', {
       bandId: bid,
       contract: {
@@ -544,7 +570,7 @@ export async function adminChecks(ydreEnv, ok) {
 
   await bandA.clearLoginAttempts(MUSIKER);
   const krydsLogin = await runAction(env, 'login',
-    { bandId: A, email: MUSIKER, passwordHash: await sha256hex(nyA.seedPassword) });
+    { bandId: A, email: MUSIKER, passwordHash: musikerHash });
   const krydsCreds = { email: MUSIKER, token: krydsLogin.memberToken };
 
   const kunEt = await kald('getAllJobs', {}, krydsCreds);

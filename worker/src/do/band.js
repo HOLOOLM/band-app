@@ -18,6 +18,10 @@ import {
   applyMigrations, readSchemaVersion
 } from './schema.js';
 
+// Fast nøgle til den band-brede spray-tæller. Én række pr. band, aldrig flere
+// — se sprayState nedenfor.
+const SPRAY_KEY = 'sprayfail';
+
 export class BandDO extends DurableObject {
   // Konstruktøren SKAL være tom-agtig. Objektet hiberneres efter 10 sekunder
   // uden trafik og smides ud af hukommelsen efter 70-140 sekunder, hvorefter
@@ -1458,6 +1462,50 @@ export class BandDO extends DurableObject {
     return { ok: true };
   }
 
+  // ── Band-bred spærring mod password spraying ──────────────────────────────
+  //
+  // loginlock: er pr. e-mail og dækker derfor kun ét offer ad gangen. Én
+  // adgangskode prøvet mod ALLE konti i bandet ramte aldrig nogen grænse: hver
+  // konto kostede ét forsøg ud af fem, og forsøget kunne gentages hvert
+  // kvarter uden at låse nogen ude eller udløse en alarm.
+  //
+  // Tælleren ligger her frem for i actions/auth.js, fordi et Durable Object er
+  // enkelttrådet: læs-modificér-skriv er atomar uden videre. Den bruger ÉN fast
+  // nøgle, så den pr. konstruktion ikke kan vokse ubundet — modsat loginlock:,
+  // der får en række pr. forsøgt e-mail.
+
+  async sprayState(maxAttempts, windowSeconds) {
+    await this.#ready();
+    const raw = this.db.value('SELECT value FROM band_meta WHERE key = ?', SPRAY_KEY);
+    if (!raw) return { blocked: false, attempts: 0 };
+    let st;
+    try { st = JSON.parse(raw); } catch (e) { return { blocked: false, attempts: 0 }; }
+    if (!st.until || Date.parse(st.until) <= Date.now()) {
+      this.db.run('DELETE FROM band_meta WHERE key = ?', SPRAY_KEY);
+      return { blocked: false, attempts: 0 };
+    }
+    return { blocked: st.attempts >= maxAttempts, attempts: st.attempts, until: st.until };
+  }
+
+  async penalizeSpray(maxAttempts, windowSeconds) {
+    await this.#ready();
+    const st = await this.sprayState(maxAttempts, windowSeconds);
+    const attempts = st.attempts + 1;
+    const until = new Date(Date.now() + windowSeconds * 1000).toISOString();
+    this.db.run(
+      `INSERT INTO band_meta (key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      SPRAY_KEY, JSON.stringify({ attempts, until })
+    );
+    return { blocked: attempts >= maxAttempts, attempts };
+  }
+
+  async clearSpray() {
+    await this.#ready();
+    this.db.run('DELETE FROM band_meta WHERE key = ?', SPRAY_KEY);
+    return { ok: true };
+  }
+
   /** Skriver en linje i login-loggen. Kræver at kalderen har verificeret auth. */
   async trackLogin(memberId, email, userAgent) {
     await this.#ready();
@@ -1607,7 +1655,7 @@ export class BandDO extends DurableObject {
    */
   async runRetention(loginCutoff, cacheCutoff) {
     await this.#ready();
-    let sessioner = 0, loginLog = 0, cache = 0;
+    let sessioner = 0, loginLog = 0, cache = 0, laase = 0;
     this.ctx.storage.transactionSync(() => {
       this.db.run('DELETE FROM sessions WHERE expires_at <= ?', new Date().toISOString());
       sessioner = this.db.changes();
@@ -1619,8 +1667,30 @@ export class BandDO extends DurableObject {
         this.db.run('DELETE FROM distance_cache WHERE cached_at < ?', cacheCutoff);
         cache = this.db.changes();
       }
+      // Udløbne lockout-rækker.
+      //
+      // penalizeLogin opretter én band_meta-række pr. FORSØGT e-mail, og den
+      // slettes kun hvis netop den e-mail forsøges igen efter vinduets udløb.
+      // Retention rørte dem ikke, så en angriber kunne skrive ubegrænset mange
+      // permanente rækker ved at logge ind med opdigtede adresser.
+      //
+      // Prædikatet læser `until` ud af JSON-værdien. Lexikografisk
+      // sammenligning er sikker her, fordi begge sider er
+      // `new Date(...).toISOString()` — fast bredde, UTC. json_valid()-grenen
+      // rydder ødelagte rækker, hvilket er ønsket: loginAttemptState behandler
+      // dem alligevel som "ingen lås".
+      //
+      // key LIKE-præfikset er det der beskytter schema_version og de spejlede
+      // band-flag i samme tabel. Kør aldrig prædikatet uden det.
+      this.db.run(
+        `DELETE FROM band_meta
+          WHERE key LIKE 'loginlock:%'
+            AND (json_valid(value) = 0
+                 OR COALESCE(json_extract(value, '$.until'), '') <= ?)`,
+        new Date().toISOString());
+      laase = this.db.changes();
     });
-    return { ok: true, sessioner, loginLog, cache };
+    return { ok: true, sessioner, loginLog, cache, laase };
   }
 
   async writeCounter() {

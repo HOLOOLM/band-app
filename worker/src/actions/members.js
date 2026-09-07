@@ -17,7 +17,8 @@
 
 import { sha256hex, newPasswordFields, pwIterations, randomBytes } from '../lib/crypto.js';
 import { publicMember } from '../auth/verify.js';
-import { registerIdentity, syncPasswordAcrossBands, removeIdentityBand } from '../auth/identity.js';
+import { registerIdentity, removeIdentityBand } from '../auth/identity.js';
+import { masterStub } from '../lib/addressing.js';
 import { userError } from '../lib/errors.js';
 
 /**
@@ -94,7 +95,7 @@ export async function saveMember(ctx) {
       createdAt: new Date().toISOString()
     });
 
-    const reg = await registerIdentity(env, email, bandId, pf);
+    const reg = await registerIdentity(env, email, bandId);
 
     // Spiller musikeren allerede i et andet band, har de et password der virker.
     // Det skal fortsat virke her, så vi overskriver det ikke — men så er den
@@ -130,7 +131,7 @@ export async function saveMember(ctx) {
   if (!Object.keys(patch).length) return { ok: false, error: 'Ingen felter at opdatere' };
   const r = await band.updateMember(data.id, patch);
   if (!r.ok) return { ok: false, error: 'Medlemmet findes ikke' };
-  if (patch.email) await registerIdentity(env, patch.email, bandId, null);
+  if (patch.email) await registerIdentity(env, patch.email, bandId);
   return { ok: true, id: data.id };
 }
 
@@ -167,10 +168,13 @@ export async function deleteMember(ctx) {
 /**
  * resetPassword — admin. Giver medlemmet en ny tilfældig kode og tvinger skift.
  *
- * Nulstillingen skrives ud til alle musikerens bands, fordi passwordet er delt
- * på tværs. Det betyder — som i originalen (Code.gs:1809) — at en band-admin
- * også nulstiller adgangen i de andre bands musikeren spiller i. Det er bevaret
- * adfærd, men værd at vide.
+ * Virker KUN i dette band. Originalen (Code.gs:1809) skrev nulstillingen ud til
+ * alle musikerens bands, og det blev båret med over hertil — men det var en
+ * kontoovertagelse på tværs af tenants, ikke en bekvemmelighed: admin får koden
+ * udleveret i klartekst, så en admin i band X kendte offerets kode i band Y.
+ *
+ * SSO er ikke afskaffet. Musikeren bruger stadig én kode overalt; den
+ * synkroniseres bare kun når EJEREN selv vælger den, gennem changePassword.
  */
 export async function resetPassword(ctx) {
   const { env, band, bandId, p } = ctx;
@@ -185,15 +189,21 @@ export async function resetPassword(ctx) {
   const r = await band.setMemberPassword(id, pf.passwordHash, pf.pwSalt, true);
   if (!r.ok) return { ok: false, error: 'Kunne ikke nulstille' };
 
-  // Fejler dette delvist, er koden stadig skiftet i dette band. Vi fejler derfor
-  // ikke handlingen — admin har fået en kode der virker her.
-  const sync = await syncPasswordAcrossBands(env, target.email, pf, bandId);
+  // BAND-LOKAL. Nulstillingen skrives IKKE længere ud til musikerens øvrige
+  // bands, og det er hele pointen: koden her er valgt af en admin, som får den
+  // udleveret i klartekst nedenfor. Skrev vi den videre til band Y, ville en
+  // admin i band X kende offerets kode i band Y — altså kontoovertagelse på
+  // tværs af tenants, med `admin`-rollen som eneste forudsætning.
+  //
+  // Musikeren har derfor kortvarigt en anden kode i dette band end i sine
+  // øvrige. Det er acceptabelt, fordi setMemberPassword sætter
+  // forcePasswordChange, og det efterfølgende changePassword — hvor det er
+  // EJEREN der vælger koden — synkroniserer på tværs igen. Se
+  // syncPasswordAcrossBands i auth/identity.js.
+  await masterStub(env).audit(
+    ctx.member ? ctx.member.email : 'system', 'kode-nulstillet', bandId, target.email);
 
-  return {
-    ok: true,
-    seedPassword: tempPassword,
-    andreBands: sync.opdaterede || 0
-  };
+  return { ok: true, seedPassword: tempPassword, andreBands: 0 };
 }
 
 /**

@@ -274,7 +274,7 @@ function drawPreview(){
     <div class="pdf-page" style="font-family:'Inter',sans-serif;color:#1A1A1A">
       <div style="text-align:center;font-size:28px;font-weight:700;margin-bottom:24px">Sceneplan</div>
       ${SCENEPLAN_DATA_URL
-        ? `<div style="text-align:center"><img src="${SCENEPLAN_DATA_URL}" alt="Sceneplan" style="max-width:100%;max-height:920px;object-fit:contain"></div>`
+        ? `<div style="text-align:center"><img src="${escapeHtml(SCENEPLAN_DATA_URL)}" alt="Sceneplan" style="max-width:100%;max-height:920px;object-fit:contain"></div>`
         : (BAND_CONFIG.hasSceneplan
             ? `<div style="text-align:center;padding:32px;color:#8A6F4D;font-size:13px">Indlæser sceneplan…</div>`
             : `<div style="text-align:center;padding:32px;border:1px dashed #D97A6C;background:#F8E5E0;color:#7A2A1A;line-height:1.6">
@@ -287,7 +287,7 @@ function drawPreview(){
   let riderPagesHtml;
   if (RIDER_PDF_PAGES && RIDER_PDF_PAGES.length){
     riderPagesHtml = RIDER_PDF_PAGES.map(url =>
-      `<div class="pdf-page" style="margin-bottom:24px;padding:0;overflow:hidden"><img src="${url}" alt="" style="width:100%;display:block"></div>`
+      `<div class="pdf-page" style="margin-bottom:24px;padding:0;overflow:hidden"><img src="${escapeHtml(url)}" alt="" style="width:100%;display:block"></div>`
     ).join('');
   } else if (BAND_CONFIG.hasRiderPdf){
     riderPagesHtml = `<div class="pdf-page" style="margin-bottom:24px;text-align:center;padding:48px;color:#8A6F4D;font-size:13px">Indlæser rider-PDF…</div>`;

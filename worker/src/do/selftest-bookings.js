@@ -457,6 +457,61 @@ export async function bookingChecks(ydreEnv, ok) {
      suspLogin.ok === false && suspLogin.error === 'Forkert email eller adgangskode',
      suspLogin.error);
 
+  // M7: et EKSISTERENDE token skal også dø når kontoen deaktiveres.
+  //
+  // verifyBooker var før et rent signaturtjek, og harAdgang så kun på bandets
+  // status — aldrig bookerens. En frataget booker beholdt derfor fuld adgang i
+  // op til otte timer og kunne blive ved med at sende tilbud.
+  // Kontoen er suspenderet nu, så vi genaktiverer, logger ind, og suspenderer
+  // BAGEFTER — det er det udestående token der skal testes.
+  await runAction(env, 'operatorSaveBooker', { email: BOOKER2, status: 'active' }, opCreds);
+  await master.clearBookerLoginAttempts(BOOKER2);
+  const aktivLogin = await runAction(env, 'bookerLogin',
+    { email: BOOKER2, passwordHash: await sha256hex(booker2.tempPassword) });
+  const udestaaende = { bookerToken: aktivLogin.token };
+  const foerSusp = await runAction(env, 'bookerGetBands', {}, udestaaende);
+  ok('booker: token virker mens kontoen er aktiv', foerSusp.ok === true, foerSusp.error);
+
+  await runAction(env, 'operatorSaveBooker', { email: BOOKER2, status: 'suspended' }, opCreds);
+  const efterSusp = await runAction(env, 'bookerGetBands', {}, udestaaende);
+  ok('booker: udestående token dør når kontoen deaktiveres',
+     efterSusp.ok === false,
+     efterSusp.ok === true ? 'FRATAGET BOOKER HAR STADIG ADGANG' : efterSusp.error);
+
+  // M7: bookeren skal kunne skifte sin egen kode. Der fandtes ingen action, så
+  // forcePasswordChange var et dødt flag og bookere sad fast på operatørens
+  // engangskode.
+  await runAction(env, 'operatorSaveBooker', { email: BOOKER2, status: 'active' }, opCreds);
+  await master.clearBookerLoginAttempts(BOOKER2);
+  const skiftLogin = await runAction(env, 'bookerLogin',
+    { email: BOOKER2, passwordHash: await sha256hex(booker2.tempPassword) });
+  const nyBkKode = await sha256hex('booker-egen-kode-2026-lang');
+  const bkSkift = await runAction(env, 'bookerChangePassword', {
+    oldHash: await sha256hex(booker2.tempPassword), newHash: nyBkKode
+  }, { bookerToken: skiftLogin.token });
+  ok('bookerChangePassword: bookeren kan skifte sin egen kode',
+     bkSkift.ok === true && typeof bkSkift.token === 'string', bkSkift.error);
+
+  await master.clearBookerLoginAttempts(BOOKER2);
+  const medNy = await runAction(env, 'bookerLogin',
+    { email: BOOKER2, passwordHash: nyBkKode });
+  ok('bookerChangePassword: den nye kode virker og flaget er ryddet',
+     medNy.ok === true && medNy.forcePasswordChange === false, medNy.error);
+
+  await master.clearBookerLoginAttempts(BOOKER2);
+  const medGammel = await runAction(env, 'bookerLogin',
+    { email: BOOKER2, passwordHash: await sha256hex(booker2.tempPassword) });
+  ok('bookerChangePassword: den gamle kode virker ikke længere', medGammel.ok === false);
+  await master.clearBookerLoginAttempts(BOOKER2);
+
+  // Bloklisten: serveren ser kun sha256 og kan ikke måle længde, men den kan
+  // genkende de koder folk oftest vælger.
+  const svagt = await runAction(env, 'bookerChangePassword', {
+    oldHash: nyBkKode, newHash: await sha256hex('123456')
+  }, { bookerToken: medNy.token });
+  ok('bookerChangePassword: kendt svag kode afvises',
+     svagt.ok === false && /for almindelig/.test(String(svagt.error || '')), svagt.error);
+
   const nulstil = await runAction(env, 'operatorResetBookerPassword',
     { email: BOOKER }, opCreds);
   ok('operatorResetBookerPassword: giver ny midlertidig kode',

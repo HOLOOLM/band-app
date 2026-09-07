@@ -10,6 +10,8 @@
 import { sha256hex, verifyHash, needsRehash, newPasswordFields, pwIterations }
   from '../lib/crypto.js';
 import { issueToken } from '../lib/tokens.js';
+import { dummyVerify } from '../auth/verify.js';
+import { weakPasswordError } from '../lib/weak-passwords.js';
 import { masterStub, bandStub, jurisdictionActive } from '../lib/addressing.js';
 import { SETTINGS_DEFAULTS, ALL_SETTINGS_KEYS } from '../lib/settings-defaults.js';
 import { BAND_SCHEMA_VERSION } from '../do/schema.js';
@@ -43,6 +45,9 @@ export async function operatorLogin(ctx) {
 
   const op = await master.getOperator(email);
   if (!op) {
+    // Samme KDF-pris som en kendt operatør, ellers afslører svartiden hvilken
+    // adresse der er systemets mest privilegerede konto.
+    await dummyVerify(env, String(p.passwordHash || ''));
     await master.penalizeOperatorLogin(email, LOGIN_MAX_ATTEMPTS, LOGIN_LOCK_SEC);
     return { ok: false, error: 'Forkert email eller adgangskode' };
   }
@@ -132,6 +137,8 @@ export async function operatorChangePassword(ctx) {
   if (ny === String(p.oldHash || '')) {
     return { ok: false, error: 'Den nye adgangskode skal være forskellig fra den gamle.' };
   }
+  const svagOp = weakPasswordError(ny);
+  if (svagOp) return { ok: false, error: svagOp };
 
   const pf = await newPasswordFields(ny, pwIterations(env));
   await master.putOperator(operator.email, pf.passwordHash, pf.pwSalt);
@@ -168,10 +175,11 @@ export async function adminResetMemberPassword(ctx) {
   const r = await band.setMemberPassword(m.id, pf.passwordHash, pf.pwSalt, true);
   if (!r.ok) return { ok: false, error: 'Kunne ikke nulstille' };
 
-  // Som resetPassword: koden er delt på tværs af musikerens bands, så
-  // nulstillingen skrives ud til dem alle.
-  const { syncPasswordAcrossBands } = await import('../auth/identity.js');
-  await syncPasswordAcrossBands(env, email, pf, bandId);
+  // BAND-LOKAL, som resetPassword. Operatøren er en betroet rolle, men koden
+  // udleveres i klartekst i svaret, og en engangskode må aldrig blive gyldig i
+  // et band den ikke blev udstedt til. Musikerens øvrige bands beholder deres
+  // eksisterende kode; SSO samles igen ved næste changePassword, hvor det er
+  // ejeren selv der vælger. Se auth/identity.js.
 
   await masterStub(env).audit(operator.email, 'kode-nulstillet', bandId, email);
   // Feltnavnet er seedPassword, fordi 09-boot.js:1183 læser netop det.
@@ -599,7 +607,7 @@ export async function registerTenant(ctx) {
       passwordHash: pf.passwordHash, pwSalt: pf.pwSalt,
       forcePasswordChange: 1, role: 'admin', createdAt: new Date().toISOString()
     });
-    const reg = await registerIdentity(env, email, bandId, pf);
+    const reg = await registerIdentity(env, email, bandId);
     // Har personen allerede en konto andetsteds, gælder deres eksisterende kode.
     if (reg.havdeIdentitetFoer) {
       await band.setMemberPassword(id, reg.identitet.passwordHash, reg.identitet.pwSalt, false);

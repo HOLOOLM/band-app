@@ -147,10 +147,12 @@ export async function importBandData(ctx) {
   // manglende identitetskort rettes ved næste kodeskift.
   for (const m of medlemmer) {
     try {
-      await registerIdentity(env, m.email, bandId, m._pf);
+      await registerIdentity(env, m.email, bandId);
     } catch (e) {
-      console.warn('importBandData: identitet fejlede for ' + m.email + ': ' +
-                   (e && e.message || e));
+      // Ingen e-mail i loggen: den er persondata, og en fejl her er identificeret
+      // godt nok af bandet plus positionen i listen.
+      console.warn('importBandData: identitetskobling fejlede for et medlem i ' +
+                   bandId + ': ' + (e && e.message || e));
     }
   }
 

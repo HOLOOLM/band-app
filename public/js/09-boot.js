@@ -807,7 +807,7 @@ function opRenderEditor(){
     <div class="card" style="margin-bottom:16px">
       <h3 class="serif" style="margin:0 0 14px;font-size:16px">Logo</h3>
       <div class="flex" style="gap:16px;align-items:center">
-        <img id="opLogoPreview" class="band-logo" src="${c.logoDataUrl||''}" alt="" style="height:56px;object-fit:contain;background:var(--ink-soft);border-radius:6px;padding:6px;min-width:80px">
+        <img id="opLogoPreview" class="band-logo" src="${escapeHtml(c.logoDataUrl||'')}" alt="" style="height:56px;object-fit:contain;background:var(--ink-soft);border-radius:6px;padding:6px;min-width:80px">
         <div>
           <input id="opLogoFile" type="file" accept="image/*" style="font-size:13px;color:var(--cream-mute)">
           <button class="btn btn-ghost btn-sm" onclick="opUploadAsset('logo', this)" style="margin-left:8px">Upload logo</button>

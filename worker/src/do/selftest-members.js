@@ -173,12 +173,14 @@ export async function memberChecks(ydreEnv, ok) {
   const adminB = await kaldB('login', { email: ADMIN, passwordHash: adminHash });
   const adminCredsB = { email: ADMIN, token: adminB.memberToken };
 
-  const iB = await kaldB('saveMember', { member: { name: 'Delt Musiker', email: DELT } }, adminCredsB);
-  ok('SSO: samme e-mail i band B genbruger eksisterende konto',
-     iB.ok === true && iB.eksisterendeBruger === true && iB.seedPassword === undefined,
-     iB.besked || iB.error);
-
-  // Log ind i A med startkoden fra A, skift kode, og verificér i B.
+  // RÆKKEFØLGEN ER EN DEL AF TESTEN. Musikeren skal logge ind i band A og selv
+  // vælge en kode, FØR band B tilføjer den samme e-mail.
+  //
+  // Før sikkerhedsrettelsen af registerIdentity seedede en admin-oprettelse
+  // identitetskortet med den midlertidige kode admin selv fik udleveret, og så
+  // genbrugte band B den. Det var netop hullet: band A's admin kendte dermed
+  // koden i band B. Nu skrives identitetskortet kun af changePassword, altså
+  // kun når ejeren selv har valgt koden — og først DA er genbrug forsvarligt.
   await bandA.clearLoginAttempts(DELT);
   const deltLogin = await kaldA('login',
     { email: DELT, passwordHash: await sha256hex(iA.seedPassword) });
@@ -191,6 +193,45 @@ export async function memberChecks(ydreEnv, ok) {
     newHash: nyDelt
   });
   ok('SSO: kodeskift i band A lykkes', skift.ok === true, skift.error);
+
+  const iB = await kaldB('saveMember', { member: { name: 'Delt Musiker', email: DELT } }, adminCredsB);
+  ok('SSO: samme e-mail i band B genbruger eksisterende konto',
+     iB.ok === true && iB.eksisterendeBruger === true && iB.seedPassword === undefined,
+     iB.besked || iB.error);
+
+  // ── K1: en admins startkode må ikke blive kanonisk ───────────────────────
+  //
+  // Selve angrebet, som regressionstest. Admin i band A opretter en e-mail der
+  // IKKE findes i systemet i forvejen og noterer startkoden. Band B tilføjer
+  // senere den samme person helt normalt. Før rettelsen var identitetskortet
+  // seedet med band A-adminens kode, band B kopierede den ind, og admin fra A
+  // kunne logge ind i band B som personen.
+  //
+  // De to assertions er hinandens modstykke: band B må ikke genbruge kontoen,
+  // OG band A's startkode må ikke virke i band B.
+  const OFFER = 'k1-offer@test.dk';
+  // Idempotens: ryd både medlemsrækkerne og identitetskoblingerne, ellers
+  // afvises anden kørsel med "Email er allerede i brug".
+  for (const [stub, bid] of [[bandA, A], [bandB, B]]) {
+    const eks = await stub.findMemberByEmail(OFFER);
+    if (eks) await stub.deleteMember(eks.id);
+    await master.removeIdentityBand(OFFER, bid);
+  }
+  const iOfferA = await kaldA('saveMember',
+    { member: { name: 'K1 Offer', email: OFFER } }, adminCreds);
+  const iOfferB = await kaldB('saveMember',
+    { member: { name: 'K1 Offer', email: OFFER } }, adminCredsB);
+  ok('K1: admin-oprettet konto uden eget kodeskift genbruges IKKE i andet band',
+     iOfferB.ok === true && iOfferB.eksisterendeBruger !== true &&
+     typeof iOfferB.seedPassword === 'string',
+     JSON.stringify({ e: iOfferB.eksisterendeBruger, s: !!iOfferB.seedPassword }));
+
+  await bandB.clearLoginAttempts(OFFER);
+  const tyveri = await kaldB('login',
+    { email: OFFER, passwordHash: await sha256hex(iOfferA.seedPassword) });
+  ok('K1: band A-adminens startkode virker IKKE i band B', tyveri.ok === false,
+     tyveri.ok === true ? 'KONTOOVERTAGELSE MULIG' : '');
+  await bandB.clearLoginAttempts(OFFER);
 
   await bandB.clearLoginAttempts(DELT);
   const iBMedNy = await kaldB('login', { email: DELT, passwordHash: nyDelt });

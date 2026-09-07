@@ -55,8 +55,11 @@ export function buildInvoiceHtml(contract, invoiceNr, settings, cpr, logoDataUrl
     ? c.paymentTermsOther : (c.paymentTerms || '');
   const payeeAddr = String(s.payeeAddress || '').split('\n');
   const contactAddr = String(s.contactAddress || '').split('\n');
+  // esc() selvom mime nu hvidlistes ved upload (actions/settings.js): det er
+  // det eneste attribut i filen der ikke gik gennem esc, og en data-URL
+  // sammensat af gemt data hører til samme kategori som alt andet her.
   const logoImg = logoDataUrl
-    ? '<img src="' + logoDataUrl + '" alt="" style="height:56px" />' : '';
+    ? '<img src="' + esc(logoDataUrl) + '" alt="" style="height:56px" />' : '';
 
   return '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>' +
     'body{font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#2A2A2A;margin:0;padding:24px}' +

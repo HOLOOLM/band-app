@@ -17,6 +17,25 @@ import { masterStub } from '../lib/addressing.js';
 const MAX_ASSET_BYTES = 5 * 1024 * 1024;
 const GYLDIGE_ASSET_KINDS = ['logo', 'rider', 'sceneplan'];
 
+// Tilladte MIME-typer pr. asset-type.
+//
+// Hvorfor en hvidliste og ikke bare et format-regex: mime'en gemmes i
+// databasen og bygges siden ind i en data-URL (do/band.js putAsset/getAsset),
+// som interpoleres UESCAPET ind i et src-attribut fem steder — heriblandt
+// serverside i lib/invoice-html.js, altså i den HTML sidecaren laver
+// honorar-PDF'en af. En contentType som
+//
+//     image/png" onerror="..." x="
+//
+// brød derfor ud af attributtet. Værdien kommer fra klienten og blev slet ikke
+// valideret. Den kan lige så godt være en kort, fast liste — appen viser
+// billeder og PDF'er, ikke vilkårlige typer.
+const GYLDIGE_MIMES = {
+  logo:      ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/svg+xml'],
+  sceneplan: ['image/png', 'image/jpeg', 'image/webp', 'image/svg+xml', 'application/pdf'],
+  rider:     ['application/pdf', 'image/png', 'image/jpeg', 'image/webp']
+};
+
 // Tema- og fontværdier skal matche THEMES og FONT_OPTIONS i public/js/01-core.js.
 const VALID_THEMES = ['kul', 'grafit', 'beton', 'stål', 'tåge'];
 const VALID_FONTS = ['Inter', 'Space Grotesk', 'IBM Plex Sans', 'Instrument Serif',
@@ -178,7 +197,22 @@ export async function adminUploadAsset(ctx) {
     };
   }
 
-  const r = await band.putAsset(kind, p.contentType, b64);
+  // Størrelsen tjekkes FØRST: en for stor fil skal give beskeden om størrelse,
+  // uanset hvad dens contentType er. Ellers ville en 8 MB fil med en uventet
+  // mime få at vide at filtypen er problemet.
+  const mime = String(p.contentType || '').trim().toLowerCase();
+  if (GYLDIGE_MIMES[kind].indexOf(mime) === -1) {
+    return {
+      ok: false,
+      error: 'Filtypen understøttes ikke her. Tilladt: ' + GYLDIGE_MIMES[kind].join(', ')
+    };
+  }
+  // base64-alfabetet, intet andet — værdien ender også i en data-URL.
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64)) {
+    return { ok: false, error: 'Ugyldige data' };
+  }
+
+  const r = await band.putAsset(kind, mime, b64);
   // Markørfelterne bevares, så getConfig's hasRider/hasSceneplan-flag og
   // frontendens eksisterende logik fortsat virker uden ændringer.
   const markoer = { logo: 'logoFileId', rider: 'riderFileId', sceneplan: 'sceneplanFileId' };

@@ -237,3 +237,49 @@ export async function decryptCpr(env, ciphertext) {
     throw new Error('CPR-integritetstjek fejlede — data kan være manipuleret');
   }
 }
+
+// ── Generisk AES-GCM til andet end CPR ──────────────────────────────────────
+//
+// Samme konstruktion som encryptCpr, men med sin EGEN nøgle. Nøgleadskillelse
+// er ikke pedanteri: bruger man samme nøgle til CPR og til sikkerhedskopier,
+// giver adgang til det ene også adgang til det andet, og en rotation af den ene
+// tvinger en rotation af den anden.
+
+const GEN_PREFIX = 'g1:';
+
+async function genKey(raw, usages) {
+  const bytes = b64ToBytes(String(raw || ''));
+  if (bytes.length !== 32) throw new Error('Nøglen skal være 32 bytes base64');
+  return crypto.subtle.importKey('raw', bytes, { name: 'AES-GCM' }, false, usages);
+}
+
+export async function encryptWithKey(rawKey, plaintext) {
+  const key = await genKey(rawKey, ['encrypt']);
+  const iv = randomBytes(12);
+  const ct = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv }, key, enc.encode(String(plaintext))
+  );
+  const all = new Uint8Array(iv.length + ct.byteLength);
+  all.set(iv, 0);
+  all.set(new Uint8Array(ct), iv.length);
+  return GEN_PREFIX + bytesToB64(all);
+}
+
+/** Er strengen krypteret med encryptWithKey? Bruges til at læse gamle, ukrypterede kopier. */
+export function isEncrypted(s) {
+  return String(s || '').startsWith(GEN_PREFIX);
+}
+
+export async function decryptWithKey(rawKey, ciphertext) {
+  const raw = String(ciphertext || '');
+  if (!raw.startsWith(GEN_PREFIX)) throw new Error('Data har ukendt format');
+  const key = await genKey(rawKey, ['decrypt']);
+  const all = b64ToBytes(raw.slice(GEN_PREFIX.length));
+  if (all.length < 12 + 16) throw new Error('Data er korrupt');
+  try {
+    return dec.decode(await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: all.slice(0, 12) }, key, all.slice(12)));
+  } catch (e) {
+    throw new Error('Integritetstjek fejlede — data kan være manipuleret');
+  }
+}

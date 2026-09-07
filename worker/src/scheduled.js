@@ -49,12 +49,24 @@ export async function scheduled(event, env, ctx) {
   const sum = ok.reduce((a, r) => ({
     sessioner: a.sessioner + r.sessioner,
     loginLog: a.loginLog + r.loginLog,
-    cache: a.cache + r.cache
-  }), { sessioner: 0, loginLog: 0, cache: 0 });
+    cache: a.cache + r.cache,
+    laase: a.laase + (r.laase || 0)
+  }), { sessioner: 0, loginLog: 0, cache: 0, laase: 0 });
+
+  // Master har sin egen oprydning: udløbne operatør- og booker-lockouts.
+  // Egen try/catch, så en fejl her ikke vælter rapporteringen af band-delen.
+  let masterLaase = 0;
+  try {
+    const mr = await masterStub(env).runMasterRetention();
+    masterLaase = (mr && mr.laase) || 0;
+  } catch (e) {
+    console.error('Cron: oprydning i master fejlede: ' + (e && e.message || e));
+  }
 
   console.log('Cron færdig i ' + (Date.now() - start) + ' ms: ' +
     bands.length + ' bands, ' + sum.sessioner + ' sessioner, ' +
-    sum.loginLog + ' login-poster, ' + sum.cache + ' cache-rækker ryddet' +
+    sum.loginLog + ' login-poster, ' + sum.cache + ' cache-rækker, ' +
+    (sum.laase + masterLaase) + ' udløbne spærringer ryddet' +
     (fejl.length ? ' — ' + fejl.length + ' FEJLEDE: ' + fejl.map(f => f.bandId).join(', ') : ''));
 
   if (fejl.length) {

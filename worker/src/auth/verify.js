@@ -6,7 +6,8 @@
 // hver action, hvor det var muligt at glemme et. Her er det umuligt: en action
 // uden auth-felt kan ikke registreres.
 
-import { sha256hex, verifyHash, needsRehash, pwIterations, newPasswordFields } from '../lib/crypto.js';
+import { sha256hex, verifyHash, needsRehash, pwIterations, newPasswordFields, pbkdf2 }
+  from '../lib/crypto.js';
 import { verifyToken, authFingerprint } from '../lib/tokens.js';
 import { userError } from '../lib/errors.js';
 
@@ -41,9 +42,32 @@ export async function verifyMember(env, bandStub, email, credential) {
 
   // ── Hash-vejen ───────────────────────────────────────────────────────────
   const m = await bandStub.findMemberByEmail(normEmail);
-  if (!m) return null;
+  if (!m) {
+    // Betal SAMME KDF-pris som for en kendt bruger.
+    //
+    // Uden dette returnerer en ukendt e-mail med det samme, mens en kendt
+    // koster PW_ITERATIONS runder PBKDF2 — en målbar, konstant forskel på hver
+    // eneste request. Fejlbeskederne er ens, men svartiden afslørede alligevel
+    // om kontoen findes, og for bookere er netop dét udtrykkeligt noget koden
+    // andre steder lover ikke at afsløre.
+    //
+    // Præcis ét pbkdf2-kald med det samme iterationstal som en rigtig
+    // verifikation — ikke to, og ikke et andet tal, for så ville den nye sti
+    // bare være et timing-signal den anden vej.
+    await dummyVerify(env, cred);
+    return null;
+  }
   if (!await verifyHash(cred, m.pwSalt, m.passwordHash)) return null;
   return m;
+}
+
+// Fast salt; kun arbejdet tæller, ikke resultatet.
+const DUMMY_SALT = 'AAAAAAAAAAAAAAAAAAAAAA==';
+
+export async function dummyVerify(env, cred) {
+  try {
+    await pbkdf2(String(cred || 'x'), DUMMY_SALT, pwIterations(env));
+  } catch (e) { /* må aldrig påvirke svaret */ }
 }
 
 /**
@@ -81,9 +105,36 @@ export async function verifyOperator(env, token) {
   return verifyToken(env, 'operator', token);
 }
 
-/** Verificerer et booker-token. */
+/**
+ * Verificerer et booker-token.
+ *
+ * Var foer et rent signaturtjek. Det betoed at tokenet levede sit eget liv i
+ * otte timer: satte operatoeren bookeren til `inactive`, eller nulstillede
+ * deres adgangskode, beholdt indehaveren af det gamle token fuld adgang.
+ * harAdgang tjekkede bandets status, aldrig bookerens egen.
+ *
+ * Nu slaas bookeren op, og bade status og password-fingeraftrykket skal passe.
+ * Det koster ét master-opslag pr. booker-kald; bookere er faa og deres kald
+ * sjaeldne, saa det er ikke den varme sti arkitekturreglen handler om.
+ */
 export async function verifyBooker(env, token) {
-  return verifyToken(env, 'booker', token);
+  const data = await verifyToken(env, 'booker', token);
+  if (!data || !data.email) return null;
+
+  const { masterStub } = await import('../lib/addressing.js');
+  let b;
+  try { b = await masterStub(env).getBooker(data.email); }
+  catch (e) { return null; }                       // fejler lukket
+  if (!b) return null;
+  if ((b.status || 'active') !== 'active') return null;
+
+  // Tokens udstedt foer pwFp blev indfoert har ikke feltet. De afvises, saa
+  // indfoerelsen ikke efterlader en periode hvor det gamle format stadig
+  // virker; bookerne logger bare ind igen.
+  const fp = await authFingerprint(sha256hex, b.passwordHash);
+  if (data.pwFp !== fp) return null;
+
+  return data;
 }
 
 /** Verificerer et arrangør-signeringstoken. */

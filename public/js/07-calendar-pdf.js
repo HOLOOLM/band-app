@@ -257,7 +257,7 @@ function _bandBadgeHtml(j){
   if (!j.bandId) return '';
   const name = escapeHtml(j.bandName || j.bandShortName || j.bandId);
   const inner = j.bandLogo
-    ? `<img src="${j.bandLogo}" alt="" style="width:16px;height:16px;border-radius:3px;object-fit:cover;flex:none">`
+    ? `<img src="${escapeHtml(j.bandLogo)}" alt="" style="width:16px;height:16px;border-radius:3px;object-fit:cover;flex:none">`
     : `<span style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:3px;font-size:8px;font-weight:700;color:#fff;flex:none;background:${escapeHtml(j.bandColor||'#8A8A8A')}">${escapeHtml(String(j.bandShortName||j.bandName||j.bandId).slice(0,2).toUpperCase())}</span>`;
   return `<div class="job-band-badge" style="display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--cream-mute);margin-bottom:4px">${inner}${name}</div>`;
 }
@@ -696,7 +696,7 @@ async function _loadAllHonorar(fra, til, statsEl, rowsEl){
   }
   const bandHeader = b => {
     const inner = b.bandLogo
-      ? `<img src="${b.bandLogo}" alt="" style="width:20px;height:20px;border-radius:4px;object-fit:cover;flex:none">`
+      ? `<img src="${escapeHtml(b.bandLogo)}" alt="" style="width:20px;height:20px;border-radius:4px;object-fit:cover;flex:none">`
       : `<span style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:4px;font-size:9px;font-weight:700;color:#fff;flex:none;background:${escapeHtml(b.bandColor||'#8A8A8A')}">${escapeHtml(String(b.bandShortName||b.bandName||'').slice(0,2).toUpperCase())}</span>`;
     return `<span style="display:inline-flex;align-items:center;gap:8px">${inner}<strong style="font-size:15px">${escapeHtml(b.bandName)}</strong></span>`;
   };
@@ -757,10 +757,20 @@ function pdfPrintStyles(){
 }
 
 // Substituerer __BAND_NAME__, __CONTACT_NAME__ osv. med værdier fra BAND_CONFIG.
+//
+// Alle tre kaldesteder (openPrintWindow, openPreviewWindow, 05-honorar.js:317)
+// lægger resultatet i HTML — enten i innerHTML eller i et blob-dokument. Derfor
+// escapes map-værdierne HER.
+//
+// Det er ikke pedanteri: substitutionen sker EFTER at resten af strengen er
+// escapet, så en band-admin der satte fx contactName til '<img src=x
+// onerror=...>' fik markup ind i kontrakt-previewet hos ethvert medlem der
+// åbnede det. Escaping et lag højere oppe kan ikke fange det, netop fordi
+// _brandify kører bagefter.
 function _brandify(str){
   if (!str) return str;
   const addr = _b('contactAddress');
-  const map = {
+  const rawMap = {
     '__BAND_NAME__': _b('bandName'),
     '__BAND_SHORT__': _b('bandShortName'),
     '__CONTACT_NAME__': _b('contactName'),
@@ -777,12 +787,18 @@ function _brandify(str){
     '__PAYEE_ADDR1__': (_b('payeeAddress').split('\n')[0] || _b('payeeAddress')),
     '__PAYEE_ADDR2__': (_b('payeeAddress').split('\n')[1] || '')
   };
+  const map = {};
+  Object.keys(rawMap).forEach(k => { map[k] = escapeHtml(rawMap[k]); });
   return String(str).replace(/__[A-Z0-9_]+__/g, m => (m in map ? map[m] : m));
 }
 
 function openPrintWindow(title, bodyHtml){
-  title = _brandify(title);
-  bodyHtml = _brandify(bodyHtml);
+  // escapeHtml FØR _brandify: titlen kommer fra kaldere der sender rå
+  // venue.name ind, og et bookertilbud kan sætte det felt frit. Rækkefølgen
+  // betyder noget — escapeHtml rører ikke understregninger, så __BAND_NAME__ og
+  // de øvrige pladsholdere overlever og substitueres bagefter.
+  title = _brandify(escapeHtml(title));
+  bodyHtml = _brandify(bodyHtml);   // allerede HTML — må IKKE escapes her
   const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${title}</title><style>${pdfPrintStyles()}</style></head><body>${bodyHtml}<script>window.onload=function(){window.focus();window.print();}<\/script></body></html>`;
   const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
   const url = URL.createObjectURL(blob);
@@ -793,8 +809,11 @@ function openPrintWindow(title, bodyHtml){
 
 // Som openPrintWindow, men UDEN auto-print + tilføjer en navy bar med Print/Gem-knap.
 function openPreviewWindow(title, bodyHtml){
+  // Samme rækkefølge som openPrintWindow. Bemærk at printBar nedenfor allerede
+  // escapede titlen — det var kun <title> der slap uescapet igennem.
+  title = _brandify(escapeHtml(title));
   const printBar = `<div style="position:fixed;top:0;left:0;right:0;background:#0F213C;color:#fff;padding:10px 16px;display:flex;align-items:center;justify-content:space-between;font-family:'Inter',sans-serif;font-size:13px;z-index:1000" class="no-print">
-    <span>${escapeHtml(title)} · Tryk <b>Print</b> og vælg "Gem som PDF" for at downloade</span>
+    <span>${title} · Tryk <b>Print</b> og vælg "Gem som PDF" for at downloade</span>
     <button onclick="window.print()" style="background:#fff;color:#0F213C;border:0;padding:8px 16px;border-radius:4px;font-weight:600;cursor:pointer">🖨 Print / Gem som PDF</button>
   </div>`;
   const extraStyle = `@media print{.no-print{display:none !important}}body{padding-top:60px}`;
@@ -845,7 +864,7 @@ function _buildHonorarBody(rows, total, member, fra, til, totalKm){
     .total-row td{background:#EFE3CC;font-weight:700;font-family:'JetBrains Mono',monospace;padding:8px 10px;color:#0F213C}</style>
   <div class="pdf-page">
     <div style="background:#0F213C;margin:-36px -40px 20px;padding:14px 20px;display:flex;align-items:center;justify-content:space-between;border-radius:4px 4px 0 0">
-      <img src="${logoUrl}" alt="" style="height:44px;object-fit:contain">
+      <img src="${escapeHtml(logoUrl)}" alt="" style="height:44px;object-fit:contain">
       <div style="color:#fff;font-family:'Inter',sans-serif;font-size:18px;font-weight:700;flex:1;text-align:center">Honorar opgørelse</div>
       <div style="text-align:right;color:rgba(255,255,255,.7);font-family:'JetBrains Mono',monospace;font-size:9px;letter-spacing:.06em">__BAND_NAME__<br>${new Date().getFullYear()}</div>
     </div>
@@ -1002,7 +1021,7 @@ function downloadMemberCallsheet(job){
     </div>`).join('');
   const body = `<div class="pdf-page">
     <div style="background:#0F213C;margin:-36px -40px 24px;padding:14px 20px;display:flex;align-items:center;justify-content:space-between;border-radius:4px 4px 0 0">
-      <img src="${logoUrl}" alt="" style="height:44px;object-fit:contain">
+      <img src="${escapeHtml(logoUrl)}" alt="" style="height:44px;object-fit:contain">
       <div style="color:#fff;font-family:'Inter',sans-serif;font-size:16px;font-weight:700;flex:1;text-align:center">Call Sheet</div>
       <div style="text-align:right;color:rgba(255,255,255,.7);font-family:'JetBrains Mono',monospace;font-size:10px">${fmtDate(c.date)}</div>
     </div>

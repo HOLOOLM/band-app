@@ -6,9 +6,10 @@
 
 import { runAction } from '../actions/router.js';
 import { validateActionTable, ACTIONS } from '../actions/index.js';
-import { bandStub } from '../lib/addressing.js';
+import { bandStub, masterStub } from '../lib/addressing.js';
 import { sha256hex, newPasswordFields, pwIterations, randomBase64 } from '../lib/crypto.js';
-import { PUBLIC_CONFIG_KEYS, NEVER_PUBLIC_KEYS, SETTINGS_DEFAULTS } from '../lib/settings-defaults.js';
+import { PUBLIC_CONFIG_KEYS, MEMBER_CONFIG_KEYS, NEVER_PUBLIC_KEYS, SETTINGS_DEFAULTS }
+  from '../lib/settings-defaults.js';
 
 const BAND = 'selftest-actions';
 const EMAIL = 'medlem@test.dk';
@@ -46,6 +47,10 @@ export async function actionChecks(ydreEnv, ok, advarsler) {
     logoFileId: 'drive-id-der-ikke-maa-laekke'
   }, ['bandName', 'bandShortName', 'seedPassword', 'bankReg', 'bankKto', 'logoFileId']);
   await band.syncMeta({ band_id: BAND, name: 'Selvtest Band', status: 'active' });
+  // Registrér også i master. Produktionen gør det via registerTenant, og de
+  // uautentificerede actions kræver nu et KENDT band — ellers kunne enhver
+  // anonym oprette et Durable Object ved at finde på et bandId.
+  await masterStub(env).createBand(BAND, 'Selvtest Band');
 
   for (const [id, email, role] of [['m1', EMAIL, 'member'], ['m2', ADMIN, 'admin']]) {
     const pf = await newPasswordFields(clientHash, iter);
@@ -83,10 +88,21 @@ export async function actionChecks(ydreEnv, ok, advarsler) {
   ok('getConfig: defaults udfylder manglende nøgler',
      cfg.config.theme === SETTINGS_DEFAULTS.theme, cfg.config.theme);
 
+  // M2: kontaktpersonens navn, telefon og adresse er persondata og hører ikke
+  // til på en uautentificeret rute. De hentes nu med getBandInfo efter login.
+  const kontaktLaek = MEMBER_CONFIG_KEYS.filter(k => cfg.config && cfg.config[k] !== undefined);
+  ok('getConfig: udleverer INGEN kontaktoplysninger uden login',
+     kontaktLaek.length === 0,
+     kontaktLaek.length ? 'LÆKKEDE: ' + kontaktLaek.join(', ') : MEMBER_CONFIG_KEYS.length + ' nøgler tjekket');
+
   // ── login ────────────────────────────────────────────────────────────────
   const bad = await kald('login', { email: EMAIL, passwordHash: await sha256hex('forkert') });
-  ok('login: forkert kode afvises med forsøg-tæller',
-     bad.ok === false && /forsøg tilbage/.test(bad.error), bad.error);
+  // Beskeden må IKKE tælle ned for angriberen. Stod der "3 forsøg tilbage",
+  // kunne man køre fire forsøg og holde pause i stedet for at udløse
+  // spærringen — og dermed gætte i det uendelige uden at nogen opdagede det.
+  ok('login: forkert kode afvises uden at afsløre hvor mange forsøg der er tilbage',
+     bad.ok === false && !/forsøg tilbage/.test(bad.error) &&
+     /Forkert email eller adgangskode/.test(bad.error), bad.error);
 
   const good = await kald('login', { email: EMAIL, passwordHash: clientHash });
   ok('login: korrekt kode lykkes', good.ok === true, good.error);
@@ -102,6 +118,35 @@ export async function actionChecks(ydreEnv, ok, advarsler) {
   // Rate-limit: tælleren skal være nulstillet efter et lykket login.
   const st = await band.loginAttemptState(EMAIL, 5, 900);
   ok('login: forsøg-tælleren nulstilles ved succes', st.attempts === 0, 'attempts=' + st.attempts);
+
+  // ── H5: band-bred spærring mod password spraying ─────────────────────────
+  //
+  // Per-e-mail-låsen dækker ét offer ad gangen. Angrebet er at prøve ÉN kode
+  // mod mange konti: hver konto koster ét forsøg ud af fem, så spærringen
+  // rammes aldrig. Her prøves derfor 60 forskellige, ukendte e-mails — under
+  // fem forsøg hver — og bandet skal spærre alligevel.
+  await band.clearSpray();
+  await band.clearLoginAttempts(EMAIL);
+  // Ryd de 60 adressers egne låse. Uden dette akkumulerer per-e-mail-tælleren
+  // hen over gentagne testkørsler, adresserne bliver låst, og login returnerer
+  // så tidligt at spray-tælleren aldrig bevæger sig — testen ville måle sin
+  // egen historik i stedet for koden.
+  for (let i = 0; i < 60; i++) await band.clearLoginAttempts('spray' + i + '@test.dk');
+  let spraySvar = null;
+  for (let i = 0; i < 60; i++) {
+    spraySvar = await kald('login', { email: 'spray' + i + '@test.dk', passwordHash: clientHash });
+  }
+  const sprayTilstand = await band.sprayState(60, 900);
+  const efterSpray = await kald('login', { email: EMAIL, passwordHash: clientHash });
+  ok('login: 60 fejl mod forskellige konti spærrer bandet (password spraying)',
+     efterSpray.ok === false,
+     'attempts=' + sprayTilstand.attempts +
+     (efterSpray.ok === true ? ' — SPRAYING IKKE BREMSET' : ''));
+  await band.clearSpray();
+  await band.clearLoginAttempts(EMAIL);
+  const efterOprydning = await kald('login', { email: EMAIL, passwordHash: clientHash });
+  ok('login: spærringen slipper igen når vinduet ryddes',
+     efterOprydning.ok === true, efterOprydning.error);
 
   // ── Lockout efter 5 forsøg ───────────────────────────────────────────────
   const laas = 'laas@test.dk';
@@ -229,8 +274,12 @@ export async function actionChecks(ydreEnv, ok, advarsler) {
   await band.syncMeta({ status: 'suspended' });
   await band.clearLoginAttempts(EMAIL);
   const susp = await kald('login', { email: EMAIL, passwordHash: nyKode });
-  ok('login: suspenderet band blokerer login',
-     susp.ok === false && /deaktiveret/.test(susp.error), susp.error);
+  // Samme generiske besked som en forkert kode: en unik tekst for "suspenderet"
+  // kom før enhver credential-kontrol og var derfor et gratis orakel på
+  // bandets tilstand.
+  ok('login: suspenderet band blokerer login (uden at røbe hvorfor)',
+     susp.ok === false && /Forkert email eller adgangskode/.test(String(susp.error || '')),
+     susp.error);
   await band.syncMeta({ status: 'active' });
 
   // ── Ukendt action og manglende bandId ────────────────────────────────────
@@ -239,6 +288,14 @@ export async function actionChecks(ydreEnv, ok, advarsler) {
   const udenBand = await runAction(env, 'getConfig', {});
   ok('router: manglende bandId afvises', udenBand.ok === false && /bandId/.test(udenBand.error),
      udenBand.error);
+
+  // H6: en uautentificeret kalder må ikke kunne oprette et Durable Object ved
+  // at finde på et bandId. getConfig er den eneste action der kan nås uden
+  // session, så det er dér grænsen skal holde.
+  const opfundet = await runAction(env, 'getConfig', { bandId: 'findes-slet-ikke-' + Date.now() });
+  ok('router: getConfig mod ukendt band afvises (opretter ikke et DO)',
+     opfundet.ok === false && /Ukendt band/.test(String(opfundet.error || '')),
+     opfundet.error);
 
   // ── Isolation gennem routeren ────────────────────────────────────────────
   // Samme session-credentials mod et ANDET band må ikke give adgang.

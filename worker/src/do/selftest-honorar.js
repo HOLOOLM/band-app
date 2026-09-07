@@ -8,7 +8,7 @@
 //      Et heltalsindeks ville sortere "2026-10" før "2026-9".
 
 import { runAction } from '../actions/router.js';
-import { bandStub } from '../lib/addressing.js';
+import { bandStub, masterStub } from '../lib/addressing.js';
 import { sha256hex, newPasswordFields, pwIterations, randomBase64 } from '../lib/crypto.js';
 import { BAND_SCHEMA_VERSION } from './schema.js';
 
@@ -35,6 +35,9 @@ export async function honorarChecks(ydreEnv, ok) {
      'invoice_nr er ' + kol.invoice_nr);
 
   await band.syncMeta({ band_id: BAND, name: 'Honorar-band', status: 'active' });
+  // Bandet skal også findes i master: de uautentificerede actions kræver nu
+  // et kendt band, så en anonym ikke kan oprette et DO ved at gætte et navn.
+  await masterStub(env).createBand(BAND, 'Honorar-band');
   for (const [id, email, role, adr] of [
     ['e-a', ADMIN, 'admin', ''], ['e-m', MEDLEM, 'member', HJEM]
   ]) {
